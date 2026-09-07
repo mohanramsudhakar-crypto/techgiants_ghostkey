@@ -1,46 +1,108 @@
-import math
+from math import radians, sin, cos, sqrt, atan2
 
-def haversine(lat1, lon1, lat2, lon2):
-    R = 6371000
 
-    p1 = math.radians(lat1)
-    p2 = math.radians(lat2)
+def calculate_distance_km(
+    lat1,
+    lon1,
+    lat2,
+    lon2
+):
 
-    dp = math.radians(lat2 - lat1)
-    dl = math.radians(lon2-lon1)
+    R = 6371.0
+
+    lat1 = radians(lat1)
+    lat2 = radians(lat2)
+
+    dlat = lat2 - lat1
+    dlon = radians(lon2 - lon1)
 
     a = (
-        math.sin(dp / 2) ** 2
-        +
-        math.cos(p1)
-        * math.cos(p2)
-        * math.sin(dl / 2) ** 2
+        sin(dlat / 2) ** 2
+        + cos(lat1)
+        * cos(lat2)
+        * sin(dlon / 2) ** 2
     )
 
-    return 2 * R * math.atan2(
-        math.sqrt(a),
-        math.sqrt(1 - a)
+    c = 2 * atan2(
+        sqrt(a),
+        sqrt(1 - a)
     )
 
-
-def minimum_travel_seconds(distance):
-    return max(5, distance/5)
+    return R * c
 
 
-def check_impossible_travel(previous_zone, current_zone, elapsed_seconds):
-    distance = haversine(
-        previous_zone["latitude"],
-        previous_zone["longitude"],
-        current_zone["latitude"],
-        current_zone["longitude"]
-    )
+def get_risk_level(score):
 
-    minimum_time = minimum_travel_seconds(distance)
+    if score <= 20:
+        return "LOW"
 
-    impossible = (distance>50 and elapsed_seconds< minimum_time)
+    if score <= 50:
+        return "MEDIUM"
 
-    return {
-        "distance": distance,
-        "minimum_time": minimum_time,
-        "impossible": impossible
-    }
+    if score <= 80:
+        return "HIGH"
+
+    return "CRITICAL"
+
+
+def calculate_risk(
+    credential_valid,
+    device_valid,
+    replay_detected=False,
+    impossible_travel=False,
+    unusual_location=False,
+    repeated_failures=False
+):
+
+    score = 0
+    reasons = []
+
+    if not credential_valid:
+
+        score += 50
+        reasons.append(
+            "Invalid credential"
+        )
+
+    if not device_valid:
+
+        score += 60
+        reasons.append(
+            "Invalid device authentication"
+        )
+
+    if replay_detected:
+
+        score += 80
+        reasons.append(
+            "Replay attack detected"
+        )
+
+    if impossible_travel:
+
+        score += 60
+        reasons.append(
+            "Impossible travel detected"
+        )
+
+    if unusual_location:
+
+        score += 25
+        reasons.append(
+            "Unusual location"
+        )
+
+    if repeated_failures:
+
+        score += 20
+        reasons.append(
+            "Repeated failed attempts"
+        )
+
+    if not reasons:
+
+        reasons.append(
+            "Authorized access"
+        )
+
+    return score, get_risk_level(score), reasons
