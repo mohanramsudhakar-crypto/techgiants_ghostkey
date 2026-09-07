@@ -1,1 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
+    <title>Ghost Key Security System</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #111827;
+            color: white;
+            margin: 0;
+            padding: 30px;
+        }
+
+        h1 {
+            text-align: center;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: auto;
+        }
+
+        .card {
+            background: #1f2937;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 10px;
+        }
+
+        .status {
+            font-size: 24px;
+            font-weight: bold;
+        }
+
+        button {
+            padding: 12px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="container">
+
+    <h1>🔐 Ghost Key Security System</h1>
+
+    <div class="card">
+        <h2>System Status</h2>
+
+        <p class="status" id="systemStatus">
+            Waiting...
+        </p>
+    </div>
+
+    <div class="card">
+        <h2>NFC Authentication</h2>
+
+        <p>Last UID:</p>
+
+        <p id="uid">
+            No card detected
+        </p>
+
+        <button onclick="testAuthentication()">
+            Test Authentication
+        </button>
+    </div>
+
+    <div class="card">
+        <h2>Access Status</h2>
+
+        <p id="accessStatus">
+            No authentication attempt
+        </p>
+    </div>
+
+</div>
+
+<script>
+
+function testAuthentication() {
+
+    document.getElementById("uid").innerText =
+        "04:A3:7B:91";
+
+    document.getElementById("accessStatus").innerText =
+        "✅ Access Granted";
+
+    document.getElementById("systemStatus").innerText =
+        "System Active";
+}
+
+</script>
+
+</body>
+</html>
