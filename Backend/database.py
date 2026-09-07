@@ -1,120 +1,96 @@
 import sqlite3
 from pathlib import Path
-from datetime import datetime, timezone
+
+DB_PATH = Path(__file__).parent / "ghostkey.db"
 
 
-BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "ghostkey.db"
-
+# ============================================================
+# DATABASE CONNECTION
+# ============================================================
 
 def get_connection():
-
-    connection = sqlite3.connect(DB_PATH)
-
-    connection.row_factory = sqlite3.Row
-
-    return connection
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
-def init_database():
+# ============================================================
+# INITIALIZE DATABASE
+# ============================================================
 
-    connection = get_connection()
+def initialize_database():
 
-    cursor = connection.cursor()
+    conn = get_connection()
+    cursor = conn.cursor()
 
-
-    
+    # --------------------------------------------------------
+    # DEVICES
+    # --------------------------------------------------------
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS devices (
-
             device_id TEXT PRIMARY KEY,
-
             device_name TEXT NOT NULL,
-
             location_name TEXT NOT NULL,
-
             latitude REAL NOT NULL,
-
             longitude REAL NOT NULL,
-
             device_secret TEXT NOT NULL,
-
             authorized INTEGER DEFAULT 1
-
         )
     """)
 
+    # --------------------------------------------------------
+    # CREDENTIALS
+    # --------------------------------------------------------
 
-   
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS credentials (
-
             credential_id TEXT PRIMARY KEY,
-
             user_name TEXT NOT NULL,
-
             credential_secret TEXT NOT NULL,
-
             authorized INTEGER DEFAULT 1
-
         )
     """)
 
-
-    
+    # --------------------------------------------------------
+    # CHALLENGES
+    # --------------------------------------------------------
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS challenges (
-
             nonce TEXT PRIMARY KEY,
-
             device_id TEXT NOT NULL,
-
-            created_at TEXT NOT NULL,
-
-            expires_at TEXT NOT NULL,
-
+            created_at REAL NOT NULL,
+            expires_at REAL NOT NULL,
             used INTEGER DEFAULT 0
-
         )
     """)
 
+    # --------------------------------------------------------
+    # ACCESS LOGS
+    # --------------------------------------------------------
 
-   
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS access_logs (
-
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-
             timestamp TEXT NOT NULL,
-
             credential_id TEXT,
-
             user_name TEXT,
-
             device_id TEXT,
-
             location_name TEXT,
-
             decision TEXT,
-
             risk_score INTEGER,
-
             risk_level TEXT,
-
             reason TEXT,
-
             authentication_result TEXT
-
         )
     """)
 
-
-  
+    # ========================================================
+    # SEED DEVICES
+    # ========================================================
 
     devices = [
-
         (
             "READER_001",
             "Ghost Key Reader 1",
@@ -134,19 +110,29 @@ def init_database():
             "reader_secret_002",
             1
         )
-
     ]
 
+    for device in devices:
 
-    cursor.executemany("""
-        INSERT OR IGNORE INTO devices
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, devices)
+        cursor.execute("""
+            INSERT OR IGNORE INTO devices
+            (
+                device_id,
+                device_name,
+                location_name,
+                latitude,
+                longitude,
+                device_secret,
+                authorized
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, device)
 
+    # ========================================================
+    # SEED CREDENTIALS
+    # ========================================================
 
- 
     credentials = [
-
         (
             "CARD_001",
             "Authorized User",
@@ -167,80 +153,45 @@ def init_database():
             "unknown_secret",
             0
         )
-
     ]
 
+    for credential in credentials:
 
-    cursor.executemany("""
-        INSERT OR IGNORE INTO credentials
-        VALUES (?, ?, ?, ?)
-    """, credentials)
+        cursor.execute("""
+            INSERT OR IGNORE INTO credentials
+            (
+                credential_id,
+                user_name,
+                credential_secret,
+                authorized
+            )
+            VALUES (?, ?, ?, ?)
+        """, credential)
 
-
-    connection.commit()
-
-    connection.close()
-
-
-def log_access(
-    credential_id,
-    user_name,
-    device_id,
-    location_name,
-    decision,
-    risk_score,
-    risk_level,
-    reason,
-    authentication_result
-):
-
-    connection = get_connection()
+    conn.commit()
+    conn.close()
 
 
-    connection.execute("""
-        INSERT INTO access_logs (
+# ============================================================
+# COMPATIBILITY ALIAS
+# ============================================================
+# Some versions of the project use init_db().
+# Keep both names working.
 
-            timestamp,
-            credential_id,
-            user_name,
-            device_id,
-            location_name,
-            decision,
-            risk_score,
-            risk_level,
-            reason,
-            authentication_result
-
-        )
-
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-
-        datetime.now(
-            timezone.utc
-        ).isoformat(),
-
-        credential_id,
-
-        user_name,
-
-        device_id,
-
-        location_name,
-
-        decision,
-
-        risk_score,
-
-        risk_level,
-
-        reason,
-
-        authentication_result
-
-    ))
+def init_db():
+    initialize_database()
 
 
-    connection.commit()
+# ============================================================
+# RUN DIRECTLY
+# ============================================================
 
-    connection.close()
+if __name__ == "__main__":
+
+    initialize_database()
+
+    print("====================================")
+    print("Ghost Key Database")
+    print("====================================")
+    print("Database initialized successfully.")
+    print("Database:", DB_PATH)
