@@ -3,11 +3,16 @@ from flask_cors import CORS
 from flask_socketio import SocketIO
 from datetime import datetime, timezone
 import secrets
-import hashlib
-import hmac
+import json
 import math
 
 from database import get_connection, initialize_database
+from security import (
+    hmac_sha256,
+    verify_hmac,
+    aes_encrypt,
+    aes_decrypt
+)
 
 
 # ============================================================
@@ -85,38 +90,50 @@ def parse_time(value):
 
 
 # ============================================================
-# HMAC-SHA256
+# ENCRYPTED REQUEST / RESPONSE HELPERS
+# ============================================================
+# Every JSON body that crosses the wire to/from an ESP32 node
+# or the dashboard is now wrapped as {"iv": ..., "data": ...}
+# (see security.py for the AES-128-CBC implementation). These
+# two helpers are the single choke point that does the
+# wrapping/unwrapping so the route handlers below barely
+# change from the plaintext version.
 # ============================================================
 
-def hmac_sha256(secret, message):
+def encrypted_response(payload_dict, status=200):
     """
-    Generate HMAC-SHA256 hexadecimal digest.
-    """
-
-    return hmac.new(
-        secret.encode("utf-8"),
-        message.encode("utf-8"),
-        hashlib.sha256
-    ).hexdigest()
-
-
-def verify_hmac(secret, message, received_hmac):
-    """
-    Securely compare received HMAC with expected HMAC.
+    JSON-encode payload_dict, AES-encrypt it, and return it
+    as a Flask response with the given status code.
     """
 
-    if not received_hmac:
-        return False
+    plaintext = json.dumps(payload_dict)
 
-    expected = hmac_sha256(
-        secret,
-        message
-    )
+    return jsonify(aes_encrypt(plaintext)), status
 
-    return hmac.compare_digest(
-        expected,
-        received_hmac
-    )
+
+def decrypt_request_body():
+    """
+    Read the incoming request's {"iv":..., "data":...} JSON
+    body and return the decrypted payload as a dict.
+
+    Returns None if the body is missing/malformed or
+    decryption fails (bad key, tampered ciphertext, etc).
+    """
+
+    envelope = request.get_json(silent=True)
+
+    if not envelope:
+        return None
+
+    if "iv" not in envelope or "data" not in envelope:
+        return None
+
+    try:
+        plaintext = aes_decrypt(envelope)
+        return json.loads(plaintext)
+
+    except Exception:
+        return None
 
 
 # ============================================================
@@ -346,17 +363,26 @@ def save_access_log(
 # ============================================================
 # REAL-TIME EVENT
 # ============================================================
+# The dashboard also gets the AES treatment: instead of
+# emitting the plaintext event dict over Socket.IO, we emit
+# the same {"iv":..., "data":...} envelope and app.js decrypts
+# it client-side before rendering the row.
+# ============================================================
 
 def emit_access_event(data):
 
     socketio.emit(
         "access_event",
-        data
+        aes_encrypt(json.dumps(data))
     )
 
 
 # ============================================================
 # HEALTH CHECK
+# ============================================================
+# Left as plaintext on purpose - it's a convenience endpoint
+# for curl/browser checks and isn't used by the ESP32 nodes
+# or the dashboard's normal flow.
 # ============================================================
 
 @app.route(
@@ -429,10 +455,10 @@ def create_challenge():
     conn.close()
 
     # --------------------------------------------------------
-    # Return challenge
+    # Return challenge (encrypted)
     # --------------------------------------------------------
 
-    return jsonify({
+    return encrypted_response({
         "nonce": nonce,
         "expires_in": 30
     })
@@ -449,12 +475,16 @@ def create_challenge():
 def access():
 
     # ========================================================
-    # READ REQUEST
+    # READ + DECRYPT REQUEST
+    # ========================================================
+    # The body arriving here is now {"iv":..., "data":...}
+    # produced by the ESP32's aesEncrypt(). If it can't be
+    # decrypted, we have no way to know who's asking, so this
+    # one error case stays plaintext - there's nothing
+    # meaningful to encrypt yet since we don't have a session.
     # ========================================================
 
-    data = request.get_json(
-        silent=True
-    )
+    data = decrypt_request_body()
 
     if not data:
 
@@ -462,7 +492,7 @@ def access():
             "decision": "BLOCK",
             "risk_score": 100,
             "risk_level": "CRITICAL",
-            "reason": "Invalid request body",
+            "reason": "Missing or undecryptable request body",
             "authentication_result": "FAILED"
         }), 400
 
@@ -544,13 +574,13 @@ def access():
 
         conn.close()
 
-        return jsonify({
+        return encrypted_response({
             "decision": "BLOCK",
             "risk_score": 80,
             "risk_level": "HIGH",
             "reason": "Invalid challenge",
             "authentication_result": "FAILED"
-        }), 403
+        }, 403)
 
     # ========================================================
     # REPLAY DETECTION
@@ -591,7 +621,7 @@ def access():
 
         emit_access_event(event)
 
-        return jsonify(event), 403
+        return encrypted_response(event, 403)
 
     # ========================================================
     # CHECK EXPIRATION
@@ -623,13 +653,13 @@ def access():
             replay=True
         )
 
-        return jsonify({
+        return encrypted_response({
             "decision": "BLOCK",
             "risk_score": risk["score"],
             "risk_level": risk["level"],
             "reason": "Challenge expired",
             "authentication_result": "EXPIRED"
-        }), 403
+        }, 403)
 
     # ========================================================
     # MARK CHALLENGE AS USED
@@ -705,7 +735,7 @@ def access():
 
         emit_access_event(event)
 
-        return jsonify(event), 403
+        return encrypted_response(event, 403)
 
     # ========================================================
     # DEVICE AUTHORIZATION
@@ -777,7 +807,7 @@ def access():
 
         emit_access_event(event)
 
-        return jsonify(event), 403
+        return encrypted_response(event, 403)
 
     # ========================================================
     # FIND CREDENTIAL
@@ -833,7 +863,7 @@ def access():
 
         emit_access_event(event)
 
-        return jsonify(event), 403
+        return encrypted_response(event, 403)
 
     # ========================================================
     # CREDENTIAL AUTHORIZATION
@@ -907,7 +937,7 @@ def access():
 
         emit_access_event(event)
 
-        return jsonify(event), 403
+        return encrypted_response(event, 403)
 
     # ========================================================
     # IMPOSSIBLE TRAVEL DETECTION
@@ -1242,16 +1272,16 @@ def access():
     print()
 
     # ========================================================
-    # RETURN RESULT
+    # RETURN RESULT (encrypted)
     # ========================================================
 
     if decision == "ALLOW":
 
-        return jsonify(event), 200
+        return encrypted_response(event, 200)
 
     else:
 
-        return jsonify(event), 403
+        return encrypted_response(event, 403)
 
 
 # ============================================================
@@ -1300,7 +1330,7 @@ def get_logs():
                 row["authentication_result"]
         })
 
-    return jsonify(logs)
+    return encrypted_response(logs)
 
 
 # ============================================================
@@ -1388,7 +1418,7 @@ def get_stats():
 
     conn.close()
 
-    return jsonify({
+    return encrypted_response({
         "total_attempts": total,
         "allowed": allowed,
         "blocked": blocked,
@@ -1413,6 +1443,8 @@ if __name__ == "__main__":
     print("Access: /api/access")
     print("Logs: /api/logs")
     print("Stats: /api/stats")
+    print("AES: all payloads above except /health are")
+    print("     encrypted - see security.py AES_KEY_HEX")
     print("==============================================")
     print()
 
