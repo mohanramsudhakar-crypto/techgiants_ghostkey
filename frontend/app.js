@@ -1,67 +1,44 @@
-const API =
-    "http://127.0.0.1:5000";
+const API = "http://127.0.0.1:5000";
 
 
-const socket =
-    io(API);
+// ======================================================
+// SOCKET.IO
+// ======================================================
+
+const socket = io(API);
 
 
+socket.on("connect", () => {
+
+    document.getElementById(
+        "status"
+    ).textContent = "● SERVER ONLINE";
+
+});
 
 
-socket.on(
-    "connect",
-    () => {
+socket.on("disconnect", () => {
 
-        document
-            .getElementById("status")
-            .textContent =
-            "● SYSTEM ONLINE";
+    document.getElementById(
+        "status"
+    ).textContent = "● SERVER OFFLINE";
 
-    }
-);
+});
 
 
-socket.on(
-    "disconnect",
-    () => {
+// ======================================================
+// FORMAT EVENT
+// ======================================================
 
-        document
-            .getElementById("status")
-            .textContent =
-            "● DISCONNECTED";
+function addEvent(event) {
 
-    }
-);
-
-
-
-
-socket.on(
-    "access_event",
-    event => {
-
-        addLog(event);
-
-        loadStats();
-
-    }
-);
-
-
-
-
-function addLog(event) {
-
-    const tbody =
+    const table =
         document.getElementById(
-            "logs"
+            "events"
         );
-
 
     const row =
-        document.createElement(
-            "tr"
-        );
+        document.createElement("tr");
 
 
     const time =
@@ -70,115 +47,151 @@ function addLog(event) {
         ).toLocaleTimeString();
 
 
-    const decisionClass =
-        event.decision === "ALLOW"
-            ? "allow"
-            : "block";
-
-
-    const riskClass =
-        event.risk_level.toLowerCase();
-
-
     row.innerHTML = `
 
         <td>${time}</td>
 
-        <td>${event.credential_id}</td>
+        <td>${event.credential_id || "-"}</td>
 
-        <td>${event.user_name}</td>
+        <td>${event.user_name || "-"}</td>
 
-        <td>${event.device_id}</td>
+        <td>${event.device_id || "-"}</td>
 
-        <td>${event.location}</td>
+        <td>${event.location_name || "-"}</td>
 
-        <td class="${riskClass}">
+        <td>
+            ${event.risk_score}
+            /
             ${event.risk_level}
-            (${event.risk_score})
         </td>
 
-        <td class="${decisionClass}">
-            ${event.decision}
+        <td>
+            <strong>
+                ${event.decision}
+            </strong>
         </td>
 
-        <td>${event.reason}</td>
+        <td>
+            ${event.reason || "-"}
+        </td>
 
     `;
 
-
-    tbody.prepend(row);
+    table.prepend(row);
 
 }
 
 
+// ======================================================
+// SOCKET EVENT
+// ======================================================
+
+socket.on(
+    "access_event",
+    event => {
+
+        addEvent(event);
+
+        loadStats();
+
+    }
+);
+
+
+// ======================================================
+// LOAD LOGS
+// ======================================================
 
 async function loadLogs() {
 
-    const response =
-        await fetch(
-            `${API}/api/logs`
+    try {
+
+        const response =
+            await fetch(
+                API + "/api/logs"
+            );
+
+        const logs =
+            await response.json();
+
+        const table =
+            document.getElementById(
+                "events"
+            );
+
+        table.innerHTML = "";
+
+        logs.reverse().forEach(
+            addEvent
         );
 
+    } catch (error) {
 
-    const logs =
-        await response.json();
-
-
-    const tbody =
-        document.getElementById(
-            "logs"
+        console.error(
+            "Log error:",
+            error
         );
 
-
-    tbody.innerHTML = "";
-
-
-    logs
-        .reverse()
-        .forEach(addLog);
-
+    }
 }
 
 
+// ======================================================
+// LOAD STATS
+// ======================================================
 
 async function loadStats() {
 
-    const response =
-        await fetch(
-            `${API}/api/stats`
+    try {
+
+        const response =
+            await fetch(
+                API + "/api/stats"
+            );
+
+        const stats =
+            await response.json();
+
+        document.getElementById(
+                "total"
+            ).textContent =
+            stats.total;
+
+        document.getElementById(
+                "allowed"
+            ).textContent =
+            stats.allowed;
+
+        document.getElementById(
+                "blocked"
+            ).textContent =
+            stats.blocked;
+
+        document.getElementById(
+                "critical"
+            ).textContent =
+            stats.critical;
+
+    } catch (error) {
+
+        console.error(
+            "Stats error:",
+            error
         );
 
-
-    const stats =
-        await response.json();
-
-
-    document
-        .getElementById("total")
-        .textContent =
-        stats.total;
-
-
-    document
-        .getElementById("allowed")
-        .textContent =
-        stats.allowed;
-
-
-    document
-        .getElementById("blocked")
-        .textContent =
-        stats.blocked;
-
-
-    document
-        .getElementById("critical")
-        .textContent =
-        stats.critical;
-
+    }
 }
 
+
+// ======================================================
+// START
+// ======================================================
 
 loadLogs();
 
 loadStats();
+
+setInterval(
+    loadStats,
+    5000
+);
