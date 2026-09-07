@@ -1,34 +1,34 @@
-from math import radians, sin, cos, sqrt, atan2
+import math
 
 
-def calculate_distance_km(
-    lat1,
-    lon1,
-    lat2,
-    lon2
-):
+EARTH_RADIUS_KM = 6371.0
 
-    R = 6371.0
 
-    lat1 = radians(lat1)
-    lat2 = radians(lat2)
+def calculate_distance_km(lat1, lon1, lat2, lon2):
+
+    lat1 = math.radians(lat1)
+    lon1 = math.radians(lon1)
+
+    lat2 = math.radians(lat2)
+    lon2 = math.radians(lon2)
 
     dlat = lat2 - lat1
-    dlon = radians(lon2 - lon1)
+    dlon = lon2 - lon1
 
     a = (
-        sin(dlat / 2) ** 2
-        + cos(lat1)
-        * cos(lat2)
-        * sin(dlon / 2) ** 2
+        math.sin(dlat / 2) ** 2
+        +
+        math.cos(lat1)
+        * math.cos(lat2)
+        * math.sin(dlon / 2) ** 2
     )
 
-    c = 2 * atan2(
-        sqrt(a),
-        sqrt(1 - a)
+    c = 2 * math.atan2(
+        math.sqrt(a),
+        math.sqrt(1 - a)
     )
 
-    return R * c
+    return EARTH_RADIUS_KM * c
 
 
 def get_risk_level(score):
@@ -46,9 +46,9 @@ def get_risk_level(score):
 
 
 def calculate_risk(
-    credential_valid,
-    device_valid,
-    replay_detected=False,
+    invalid_credential=False,
+    invalid_device=False,
+    replay=False,
     impossible_travel=False,
     unusual_location=False,
     repeated_failures=False
@@ -57,21 +57,21 @@ def calculate_risk(
     score = 0
     reasons = []
 
-    if not credential_valid:
+    if invalid_credential:
 
         score += 50
         reasons.append(
-            "Invalid credential"
+            "Invalid or unauthorized credential"
         )
 
-    if not device_valid:
+    if invalid_device:
 
         score += 60
         reasons.append(
-            "Invalid device authentication"
+            "Invalid or unauthorized device"
         )
 
-    if replay_detected:
+    if replay:
 
         score += 80
         reasons.append(
@@ -96,13 +96,11 @@ def calculate_risk(
 
         score += 20
         reasons.append(
-            "Repeated failed attempts"
+            "Repeated authentication failures"
         )
 
-    if not reasons:
-
-        reasons.append(
-            "Authorized access"
-        )
-
-    return score, get_risk_level(score), reasons
+    return {
+        "score": score,
+        "level": get_risk_level(score),
+        "reasons": reasons
+    }
