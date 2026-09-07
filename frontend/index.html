@@ -1,104 +1,211 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
+
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <title>Ghost Key Security System</title>
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
 
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            background: #111827;
-            color: white;
-            margin: 0;
-            padding: 30px;
-        }
+    <title>Ghost Key Dashboard</title>
 
-        h1 {
-            text-align: center;
-        }
+    <link
+        rel="stylesheet"
+        href="style.css"
+    >
 
-        .container {
-            max-width: 1000px;
-            margin: auto;
-        }
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 
-        .card {
-            background: #1f2937;
-            padding: 20px;
-            margin: 20px 0;
-            border-radius: 10px;
-        }
-
-        .status {
-            font-size: 24px;
-            font-weight: bold;
-        }
-
-        button {
-            padding: 12px 20px;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 16px;
-        }
-    </style>
 </head>
 
 <body>
 
 <div class="container">
 
-    <h1>🔐 Ghost Key Security System</h1>
+    <header>
 
-    <div class="card">
-        <h2>System Status</h2>
+        <div>
 
-        <p class="status" id="systemStatus">
-            Waiting...
-        </p>
-    </div>
+            <h1>GHOST KEY</h1>
 
-    <div class="card">
-        <h2>NFC Authentication</h2>
+            <p>
+                Context-Aware Access Control
+            </p>
 
-        <p>Last UID:</p>
+        </div>
 
-        <p id="uid">
-            No card detected
-        </p>
+        <div
+            id="status"
+            class="status"
+        >
+            ● SERVER OFFLINE
+        </div>
 
-        <button onclick="testAuthentication()">
-            Test Authentication
-        </button>
-    </div>
+    </header>
 
-    <div class="card">
-        <h2>Access Status</h2>
 
-        <p id="accessStatus">
-            No authentication attempt
-        </p>
-    </div>
+    <!-- ================================================= -->
+    <!-- STATISTICS -->
+    <!-- ================================================= -->
+
+    <section class="stats">
+
+        <div class="card">
+
+            <h3>Total Attempts</h3>
+
+            <div
+                id="total"
+                class="number"
+            >
+                0
+            </div>
+
+        </div>
+
+
+        <div class="card">
+
+            <h3>Allowed</h3>
+
+            <div
+                id="allowed"
+                class="number"
+            >
+                0
+            </div>
+
+        </div>
+
+
+        <div class="card">
+
+            <h3>Blocked</h3>
+
+            <div
+                id="blocked"
+                class="number"
+            >
+                0
+            </div>
+
+        </div>
+
+
+        <div class="card">
+
+            <h3>Critical</h3>
+
+            <div
+                id="critical"
+                class="number"
+            >
+                0
+            </div>
+
+        </div>
+
+    </section>
+
+
+    <!-- ================================================= -->
+    <!-- NODES -->
+    <!-- ================================================= -->
+
+    <section>
+
+        <h2>Active Readers</h2>
+
+        <div class="nodes">
+
+            <div class="node">
+
+                <h3>READER_001</h3>
+
+                <p>
+                    Chennai Lab A
+                </p>
+
+                <span class="online">
+                    PHYSICAL NODE
+                </span>
+
+            </div>
+
+
+            <div class="node">
+
+                <h3>READER_002</h3>
+
+                <p>
+                    Chennai Lab B
+                </p>
+
+                <span class="online">
+                    PHYSICAL NODE
+                </span>
+
+            </div>
+
+        </div>
+
+    </section>
+
+
+    <!-- ================================================= -->
+    <!-- LIVE EVENTS -->
+    <!-- ================================================= -->
+
+    <section>
+
+        <h2>Live Security Events</h2>
+
+        <div class="table-container">
+
+            <table>
+
+                <thead>
+
+                    <tr>
+
+                        <th>Time</th>
+
+                        <th>Card</th>
+
+                        <th>User</th>
+
+                        <th>Reader</th>
+
+                        <th>Location</th>
+
+                        <th>Risk</th>
+
+                        <th>Decision</th>
+
+                        <th>Reason</th>
+
+                    </tr>
+
+                </thead>
+
+                <tbody id="events">
+
+                </tbody>
+
+            </table>
+
+        </div>
+
+    </section>
 
 </div>
 
-<script>
 
-function testAuthentication() {
-
-    document.getElementById("uid").innerText =
-        "04:A3:7B:91";
-
-    document.getElementById("accessStatus").innerText =
-        "✅ Access Granted";
-
-    document.getElementById("systemStatus").innerText =
-        "System Active";
-}
-
-</script>
+<script src="app.js"></script>
 
 </body>
+
 </html>
