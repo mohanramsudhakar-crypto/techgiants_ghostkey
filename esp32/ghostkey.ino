@@ -1,47 +1,44 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <ESP32Servo.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-#include <ESP32Servo.h>
 #include "mbedtls/md.h"
 
-// ======================================================
-// WIFI SETTINGS
-// ======================================================
+// ============================================================
+// WIFI
+// ============================================================
 
 const char* WIFI_SSID = "NARZO";
 const char* WIFI_PASSWORD = "aahilhere";
 
 // IMPORTANT:
-// Replace this with your computer's LAN IPv4 address.
-// Example:
-// http://192.168.1.105:5000
-
+// Replace this with the IP address of the laptop running Flask.
 const char* SERVER = "http://10.188.102.24:5000";
 
-// ======================================================
-// DEVICE SETTINGS
-// ======================================================
+// ============================================================
+// NODE 1 IDENTITY
+// ============================================================
 
 const char* DEVICE_ID = "READER_001";
 const char* DEVICE_SECRET = "reader_secret_001";
 
-// ======================================================
+// ============================================================
 // PINS
-// ======================================================
-
-#define OLED_SDA 21
-#define OLED_SCL 22
+// ============================================================
 
 #define SERVO_PIN 18
 #define BUZZER_PIN 25
-#define LED_PIN 26
 
-// ======================================================
 // OLED
-// ======================================================
+#define OLED_SDA 21
+#define OLED_SCL 22
+
+// ============================================================
+// OLED
+// ============================================================
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -53,41 +50,112 @@ Adafruit_SSD1306 display(
   -1
 );
 
-// ======================================================
+// ============================================================
 // SERVO
-// ======================================================
+// ============================================================
 
-Servo doorServo;
+Servo lockServo;
 
-#define LOCK_ANGLE 0
-#define UNLOCK_ANGLE 90
+#define LOCKED_ANGLE 0
+#define UNLOCKED_ANGLE 90);
 
-// ======================================================
-// CARD SECRETS
-// ======================================================
+// ============================================================
+// OLED FUNCTIONS
+// ============================================================
 
-String getCardSecret(String cardID) {
+void oledClear() {
 
-  if (cardID == "CARD_001") {
-    return "card_secret_001";
-  }
-
-  if (cardID == "CARD_002") {
-    return "card_secret_002";
-  }
-
-  if (cardID == "CARD_999") {
-    return "unknown_secret";
-  }
-
-  return "";
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
 }
 
-// ======================================================
-// HMAC-SHA256
-// ======================================================
+void oledMessage(String line1, String line2 = "", String line3 = "") {
 
-String calculateHMAC(String secret, String message) {
+  oledClear();
+
+  display.setTextSize(1);
+
+  display.println(line1);
+
+  if (line2 != "") {
+    display.println();
+    display.println(line2);
+  }
+
+  if (line3 != "") {
+    display.println();
+    display.println(line3);
+  }
+
+  display.display();
+}
+
+
+void oledLarge(String message) {
+
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+
+  display.setTextSize(2);
+  display.setCursor(0, 10);
+
+  display.println(message);
+
+  display.display();
+}
+
+
+// ============================================================
+// SERVO FUNCTIONS
+// ============================================================
+
+void lockDoor() {
+
+  lockServo.write(LOCKED_ANGLE);
+
+  Serial.println("SERVO: LOCKED");
+}
+
+
+void unlockDoor() {
+
+  lockServo.write(UNLOCKED_ANGLE);
+
+  Serial.println("SERVO: UNLOCKED");
+}
+
+
+// ============================================================
+// BUZZER
+// ============================================================
+
+void beep() {
+
+  digitalWrite(BUZZER_PIN, HIGH);
+  delay(150);
+  digitalWrite(BUZZER_PIN, LOW);
+}
+
+
+void deniedBeep() {
+
+  for (int i = 0; i < 3; i++) {
+
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(100);
+
+    digitalWrite(BUZZER_PIN, LOW);
+    delay(100);
+  }
+}
+
+
+// ============================================================
+// HMAC SHA256
+// ============================================================
+
+String hmacSHA256(String secret, String message) {
 
   byte hmacResult[32];
 
@@ -133,125 +201,145 @@ String calculateHMAC(String secret, String message) {
   return output;
 }
 
-// ======================================================
-// OLED DISPLAY
-// ======================================================
 
-void showScreen(String line1, String line2, String line3 = "") {
+// ============================================================
+// CARD SECRETS
+// ============================================================
 
-  display.clearDisplay();
+String getCardSecret(String cardID) {
 
-  display.setTextColor(SSD1306_WHITE);
-
-  display.setTextSize(2);
-
-  display.setCursor(0, 0);
-  display.println(line1);
-
-  display.setCursor(0, 24);
-  display.println(line2);
-
-  if (line3 != "") {
-
-    display.setTextSize(1);
-
-    display.setCursor(0, 50);
-    display.println(line3);
+  if (cardID == "CARD_001") {
+    return "card_secret_001";
   }
 
-  display.display();
-}
-
-// ======================================================
-// BUZZER
-// ======================================================
-
-void beep() {
-
-  digitalWrite(BUZZER_PIN, HIGH);
-  delay(150);
-  digitalWrite(BUZZER_PIN, LOW);
-}
-
-// ======================================================
-// DENIED BUZZER
-// ======================================================
-
-void deniedBeep() {
-
-  for (int i = 0; i < 3; i++) {
-
-    digitalWrite(BUZZER_PIN, HIGH);
-    delay(120);
-
-    digitalWrite(BUZZER_PIN, LOW);
-    delay(120);
+  if (cardID == "CARD_002") {
+    return "card_secret_002";
   }
-}
 
-// ======================================================
-// SERVO
-// ======================================================
-
-void lockDoor() {
-
-  doorServo.write(LOCK_ANGLE);
-
-  Serial.println("DOOR: LOCKED");
-}
-
-void unlockDoor() {
-
-  doorServo.write(UNLOCK_ANGLE);
-
-  Serial.println("DOOR: UNLOCKED");
-}
-
-// ======================================================
-// SIMULATED PN532
-// ======================================================
-
-String simulatePN532() {
-
-  if (Serial.available()) {
-
-    String input = Serial.readStringUntil('\n');
-
-    input.trim();
-
-    if (input == "1") {
-      return "CARD_001";
-    }
-
-    if (input == "2") {
-      return "CARD_002";
-    }
-
-    if (input == "9") {
-      return "CARD_999";
-    }
+  if (cardID == "CARD_999") {
+    return "unknown_secret";
   }
 
   return "";
 }
 
-// ======================================================
-// GET CHALLENGE FROM SERVER
-// ======================================================
 
-String getChallenge() {
+// ============================================================
+// GET CHALLENGE
+// ============================================================
+
+bool getChallenge(String &nonce) {
 
   HTTPClient http;
 
   String url = String(SERVER) + "/api/challenge";
 
   Serial.println();
-  Serial.println("================================");
   Serial.println("REQUESTING CHALLENGE");
-  Serial.println("================================");
-
-  Serial.print("URL: ");
   Serial.println(url);
+
+  oledMessage(
+    "GHOST KEY",
+    "REQUESTING",
+    "CHALLENGE..."
+  );
+
+  http.begin(url);
+
+  int httpCode = http.GET();
+
+  Serial.print("HTTP STATUS: ");
+  Serial.println(httpCode);
+
+  if (httpCode <= 0) {
+
+    Serial.print("HTTP ERROR: ");
+    Serial.println(http.errorToString(httpCode));
+
+    oledMessage(
+      "SERVER ERROR",
+      "NO CONNECTION",
+      "HTTP " + String(httpCode)
+    );
+
+    http.end();
+
+    return false;
+  }
+
+  String response = http.getString();
+
+  Serial.println("SERVER RESPONSE:");
+  Serial.println(response);
+
+  DynamicJsonDocument doc(2048);
+
+  DeserializationError error =
+      deserializeJson(doc, response);
+
+  if (error) {
+
+    Serial.println("JSON PARSE ERROR");
+
+    oledMessage(
+      "SERVER ERROR",
+      "BAD RESPONSE"
+    );
+
+    http.end();
+
+    return false;
+  }
+
+  if (!doc["nonce"]) {
+
+    Serial.println("NO NONCE RECEIVED");
+
+    oledMessage(
+      "SERVER ERROR",
+      "NO CHALLENGE"
+    );
+
+    http.end();
+
+    return false;
+  }
+
+  nonce = doc["nonce"].as<String>();
+
+  Serial.print("CHALLENGE NONCE: ");
+  Serial.println(nonce);
+
+  http.end();
+
+  return true;
+}
+
+
+// ============================================================
+// SEND ACCESS REQUEST
+// ============================================================
+
+bool sendAccess(
+  String cardID,
+  String nonce,
+  String deviceHMAC,
+  String credentialHMAC
+) {
+
+  HTTPClient http;
+
+  String url = String(SERVER) + "/api/access";
+
+  Serial.println();
+  Serial.println("SENDING ACCESS REQUEST");
+  Serial.println(url);
+
+  oledMessage(
+    "VERIFYING",
+    cardID,
+    "PLEASE WAIT..."
+  );
 
   http.begin(url);
 
@@ -260,379 +348,289 @@ String getChallenge() {
     "application/json"
   );
 
-  String payload =
-    "{\"device_id\":\"" +
-    String(DEVICE_ID) +
-    "\"}";
+  DynamicJsonDocument doc(2048);
 
-  Serial.print("Payload: ");
-  Serial.println(payload);
+  doc["credential_id"] = cardID;
+  doc["device_id"] = DEVICE_ID;
+  doc["nonce"] = nonce;
+  doc["device_hmac"] = deviceHMAC;
+  doc["credential_hmac"] = credentialHMAC;
 
-  int httpResponseCode = http.POST(payload);
+  String requestBody;
 
-  // ==================================================
-  // TEMPORARY DEBUGGING
-  // ==================================================
+  serializeJson(doc, requestBody);
 
-  Serial.print("HTTP status: ");
-  Serial.println(httpResponseCode);
+  int httpCode =
+      http.POST(requestBody);
 
-  if (httpResponseCode > 0) {
+  Serial.print("HTTP STATUS: ");
+  Serial.println(httpCode);
 
-    String response = http.getString();
+  String response = http.getString();
 
-    Serial.println("--------------------------------");
-    Serial.println("SERVER RESPONSE:");
-    Serial.println(response);
-    Serial.println("--------------------------------");
+  Serial.println("SERVER RESPONSE:");
+  Serial.println(response);
 
-    DynamicJsonDocument doc(2048);
+  if (httpCode <= 0) {
 
-    DeserializationError error =
-      deserializeJson(doc, response);
+    Serial.print("HTTP ERROR: ");
+    Serial.println(http.errorToString(httpCode));
 
-    if (error) {
-
-      Serial.print("JSON parsing error: ");
-      Serial.println(error.c_str());
-
-      http.end();
-
-      return "";
-    }
-
-    String nonce =
-      doc["nonce"].as<String>();
-
-    Serial.print("NONCE RECEIVED: ");
-    Serial.println(nonce);
+    oledMessage(
+      "SERVER ERROR",
+      "CONNECTION",
+      "FAILED"
+    );
 
     http.end();
 
-    return nonce;
-  }
-
-  // ==================================================
-  // HTTP ERROR
-  // ==================================================
-
-  Serial.print("Challenge HTTP error: ");
-  Serial.println(httpResponseCode);
-
-  Serial.println("Possible causes:");
-  Serial.println("1. Server unreachable");
-  Serial.println("2. Wrong SERVER IP");
-  Serial.println("3. Wrong port");
-  Serial.println("4. WiFi problem");
-  Serial.println("5. Firewall blocking port 5000");
-
-  http.end();
-
-  return "";
-}
-
-// ======================================================
-// SEND AUTHENTICATION REQUEST
-// ======================================================
-
-bool authenticateCard(String cardID) {
-
-  // Always start locked
-  lockDoor();
-
-  Serial.println();
-  Serial.println("================================");
-  Serial.println("AUTHENTICATION START");
-  Serial.println("================================");
-
-  Serial.print("CARD: ");
-  Serial.println(cardID);
-
-  // ==================================================
-  // GET CHALLENGE
-  // ==================================================
-
-  String nonce = getChallenge();
-
-  if (nonce == "") {
-
-    Serial.println("FAILED TO GET CHALLENGE");
-
-    showScreen(
-      "SERVER",
-      "ERROR",
-      "Door remains locked"
-    );
-
-    digitalWrite(LED_PIN, LOW);
+    lockDoor();
 
     return false;
   }
 
-  // ==================================================
-  // CARD SECRET
-  // ==================================================
+  DynamicJsonDocument responseDoc(4096);
 
-  String cardSecret =
-    getCardSecret(cardID);
+  DeserializationError error =
+      deserializeJson(
+        responseDoc,
+        response
+      );
 
-  if (cardSecret == "") {
+  if (error) {
 
-    Serial.println("UNKNOWN CARD SECRET");
+    Serial.println("RESPONSE JSON ERROR");
 
-    showScreen(
-      "CARD",
-      "UNKNOWN"
+    oledMessage(
+      "SERVER ERROR",
+      "BAD RESPONSE"
+    );
+
+    http.end();
+
+    lockDoor();
+
+    return false;
+  }
+
+  String decision =
+      responseDoc["decision"] | "BLOCK";
+
+  String reason =
+      responseDoc["reason"] | "Unknown";
+
+  int riskScore =
+      responseDoc["risk_score"] | 0;
+
+  String riskLevel =
+      responseDoc["risk_level"] | "UNKNOWN";
+
+  Serial.print("DECISION: ");
+  Serial.println(decision);
+
+  Serial.print("RISK: ");
+  Serial.println(riskScore);
+
+  Serial.print("LEVEL: ");
+  Serial.println(riskLevel);
+
+  Serial.print("REASON: ");
+  Serial.println(reason);
+
+  // ========================================================
+  // ACCESS ALLOWED
+  // ========================================================
+
+  if (decision == "ALLOW") {
+
+    Serial.println();
+    Serial.println("ACCESS GRANTED");
+
+    oledLarge("ACCESS");
+
+    delay(800);
+
+    oledMessage(
+      "ACCESS GRANTED",
+      cardID,
+      "RISK: " + String(riskScore)
+    );
+
+    beep();
+
+    unlockDoor();
+
+    delay(5000);
+
+    lockDoor();
+
+    oledMessage(
+      "GHOST KEY",
+      "DOOR LOCKED"
+    );
+  }
+
+  // ========================================================
+  // ACCESS BLOCKED
+  // ========================================================
+
+  else {
+
+    Serial.println();
+    Serial.println("ACCESS DENIED");
+
+    oledLarge("DENIED");
+
+    delay(1000);
+
+    oledMessage(
+      "ACCESS DENIED",
+      cardID,
+      "RISK: " + String(riskScore)
     );
 
     deniedBeep();
 
-    digitalWrite(LED_PIN, LOW);
+    lockDoor();
 
-    return false;
-  }
+    delay(2500);
 
-  // ==================================================
-  // DEVICE HMAC
-  // ==================================================
-
-  String deviceMessage =
-    nonce + "|" + String(DEVICE_ID);
-
-  String deviceHMAC =
-    calculateHMAC(
-      DEVICE_SECRET,
-      deviceMessage
+    oledMessage(
+      "GHOST KEY",
+      "SYSTEM READY"
     );
-
-  Serial.println();
-  Serial.println("DEVICE HMAC:");
-  Serial.println(deviceHMAC);
-
-  // ==================================================
-  // CARD HMAC
-  // ==================================================
-
-  String cardMessage =
-    nonce + "|" + cardID;
-
-  String cardHMAC =
-    calculateHMAC(
-      cardSecret,
-      cardMessage
-    );
-
-  Serial.println();
-  Serial.println("CARD HMAC:");
-  Serial.println(cardHMAC);
-
-  // ==================================================
-  // SEND ACCESS REQUEST
-  // ==================================================
-
-  HTTPClient http;
-
-  String url =
-    String(SERVER) + "/api/access";
-
-  Serial.println();
-  Serial.println("================================");
-  Serial.println("SENDING ACCESS REQUEST");
-  Serial.println("================================");
-
-  Serial.print("URL: ");
-  Serial.println(url);
-
-  http.begin(url);
-
-  http.addHeader(
-    "Content-Type",
-    "application/json"
-  );
-
-  String payload =
-    "{"
-    "\"device_id\":\"" + String(DEVICE_ID) + "\","
-    "\"credential_id\":\"" + cardID + "\","
-    "\"nonce\":\"" + nonce + "\","
-    "\"device_hmac\":\"" + deviceHMAC + "\","
-    "\"credential_hmac\":\"" + cardHMAC + "\""
-    "}";
-
-  Serial.println("ACCESS PAYLOAD:");
-  Serial.println(payload);
-
-  int httpResponseCode =
-    http.POST(payload);
-
-  // ==================================================
-  // DEBUG ACCESS RESPONSE
-  // ==================================================
-
-  Serial.print("ACCESS HTTP STATUS: ");
-  Serial.println(httpResponseCode);
-
-  if (httpResponseCode > 0) {
-
-    String response =
-      http.getString();
-
-    Serial.println("--------------------------------");
-    Serial.println("ACCESS SERVER RESPONSE:");
-    Serial.println(response);
-    Serial.println("--------------------------------");
-
-    DynamicJsonDocument doc(4096);
-
-    DeserializationError error =
-      deserializeJson(doc, response);
-
-    if (error) {
-
-      Serial.print("ACCESS JSON ERROR: ");
-      Serial.println(error.c_str());
-
-      http.end();
-
-      return false;
-    }
-
-    String decision =
-      doc["decision"].as<String>();
-
-    String riskLevel =
-      doc["risk_level"].as<String>();
-
-    int riskScore =
-      doc["risk_score"] | 0;
-
-    String reason =
-      doc["reason"].as<String>();
-
-    Serial.println();
-    Serial.println("========== RESULT ==========");
-
-    Serial.print("DECISION: ");
-    Serial.println(decision);
-
-    Serial.print("RISK LEVEL: ");
-    Serial.println(riskLevel);
-
-    Serial.print("RISK SCORE: ");
-    Serial.println(riskScore);
-
-    Serial.print("REASON: ");
-    Serial.println(reason);
-
-    Serial.println("============================");
-
-    // ==================================================
-    // ACCESS GRANTED
-    // ==================================================
-
-    if (decision == "ALLOW") {
-
-      Serial.println();
-      Serial.println("ACCESS GRANTED!");
-
-      showScreen(
-        "ACCESS",
-        "GRANTED",
-        "Door unlocked"
-      );
-
-      digitalWrite(
-        LED_PIN,
-        HIGH
-      );
-
-      beep();
-
-      unlockDoor();
-
-      delay(5000);
-
-      lockDoor();
-
-      digitalWrite(
-        LED_PIN,
-        LOW
-      );
-
-      showScreen(
-        "DOOR",
-        "LOCKED"
-      );
-
-      http.end();
-
-      return true;
-    }
-
-    // ==================================================
-    // ACCESS DENIED
-    // ==================================================
-
-    else {
-
-      Serial.println();
-      Serial.println("ACCESS DENIED!");
-
-      showScreen(
-        "ACCESS",
-        "DENIED",
-        riskLevel
-      );
-
-      digitalWrite(
-        LED_PIN,
-        LOW
-      );
-
-      deniedBeep();
-
-      lockDoor();
-
-      delay(2000);
-
-      showScreen(
-        "DOOR",
-        "LOCKED"
-      );
-
-      http.end();
-
-      return false;
-    }
   }
-
-  // ==================================================
-  // ACCESS HTTP ERROR
-  // ==================================================
-
-  Serial.print(
-    "Access HTTP error: "
-  );
-
-  Serial.println(
-    httpResponseCode
-  );
-
-  lockDoor();
 
   http.end();
 
-  return false;
+  return decision == "ALLOW";
 }
 
-// ======================================================
-// WIFI CONNECTION
-// ======================================================
+
+// ============================================================
+// NORMAL ACCESS
+// ============================================================
+
+void normalAccess(String cardID) {
+
+  Serial.println();
+  Serial.println("================================");
+  Serial.println("CARD DETECTED");
+  Serial.println(cardID);
+  Serial.println("================================");
+
+  oledMessage(
+    "CARD DETECTED",
+    cardID,
+    "READING..."
+  );
+
+  String cardSecret =
+      getCardSecret(cardID);
+
+  if (cardSecret == "") {
+
+    Serial.println("UNKNOWN CARD");
+
+    oledMessage(
+      "UNKNOWN CARD",
+      cardID
+    );
+
+    deniedBeep();
+
+    lockDoor();
+
+    return;
+  }
+
+  String nonce;
+
+  if (!getChallenge(nonce)) {
+
+    Serial.println("NO CHALLENGE");
+
+    oledMessage(
+      "AUTH ERROR",
+      "NO CHALLENGE"
+    );
+
+    lockDoor();
+
+    return;
+  }
+
+  // ========================================================
+  // CREATE HMACs
+  // ========================================================
+
+  String deviceMessage =
+      nonce + "|" + DEVICE_ID;
+
+  String credentialMessage =
+      nonce + "|" + cardID;
+
+  String deviceHMAC =
+      hmacSHA256(
+        DEVICE_SECRET,
+        deviceMessage
+      );
+
+  String credentialHMAC =
+      hmacSHA256(
+        cardSecret,
+        credentialMessage
+      );
+
+  // ========================================================
+  // SEND TO SERVER
+  // ========================================================
+
+  sendAccess(
+    cardID,
+    nonce,
+    deviceHMAC,
+    credentialHMAC
+  );
+}
+
+
+// ============================================================
+// SIMULATED PN532
+// ============================================================
+
+String getSimulatedCard(char command) {
+
+  if (command == '1') {
+    return "CARD_001";
+  }
+
+  if (command == '2') {
+    return "CARD_002";
+  }
+
+  if (command == '9') {
+    return "CARD_999";
+  }
+
+  return "";
+}
+
+
+// ============================================================
+// WIFI
+// ============================================================
 
 void connectWiFi() {
 
   Serial.println();
-  Serial.println("Connecting to WiFi...");
+  Serial.println("CONNECTING TO WIFI");
+
+  oledMessage(
+    "GHOST KEY",
+    "CONNECTING",
+    "TO WIFI..."
+  );
 
   WiFi.begin(
     WIFI_SSID,
@@ -657,38 +655,37 @@ void connectWiFi() {
 
   if (WiFi.status() == WL_CONNECTED) {
 
-    Serial.println("WiFi connected!");
+    Serial.println("WIFI CONNECTED");
 
     Serial.print("ESP32 IP: ");
-    Serial.println(
-      WiFi.localIP()
+    Serial.println(WiFi.localIP());
+
+    oledMessage(
+      "WIFI CONNECTED",
+      WiFi.localIP().toString(),
+      "NODE 1 READY"
     );
 
-    Serial.print("Server: ");
-    Serial.println(SERVER);
+    delay(1500);
+  }
 
-    showScreen(
-      "GHOST",
-      "KEY",
-      "WiFi Connected"
+  else {
+
+    Serial.println("WIFI FAILED");
+
+    oledMessage(
+      "WIFI FAILED",
+      "CHECK NETWORK"
     );
 
-  } else {
-
-    Serial.println(
-      "WiFi connection FAILED!"
-    );
-
-    showScreen(
-      "WIFI",
-      "ERROR"
-    );
+    lockDoor();
   }
 }
 
-// ======================================================
+
+// ============================================================
 // SETUP
-// ======================================================
+// ============================================================
 
 void setup() {
 
@@ -696,23 +693,12 @@ void setup() {
 
   delay(1000);
 
-  Serial.println();
-  Serial.println();
-  Serial.println("================================");
-  Serial.println("        GHOST KEY");
-  Serial.println("================================");
-
-  // ==================================================
-  // GPIO
-  // ==================================================
+  // ----------------------------------------------------------
+  // Pins
+  // ----------------------------------------------------------
 
   pinMode(
     BUZZER_PIN,
-    OUTPUT
-  );
-
-  pinMode(
-    LED_PIN,
     OUTPUT
   );
 
@@ -721,136 +707,147 @@ void setup() {
     LOW
   );
 
-  digitalWrite(
-    LED_PIN,
-    LOW
+  // ----------------------------------------------------------
+  // Servo
+  // ----------------------------------------------------------
+
+  lockServo.attach(
+    SERVO_PIN
   );
 
-  // ==================================================
+  lockDoor();
+
+  // ----------------------------------------------------------
   // OLED
-  // ==================================================
+  // ----------------------------------------------------------
 
   Wire.begin(
     OLED_SDA,
     OLED_SCL
   );
 
-  if (
-    !display.begin(
-      SSD1306_SWITCHCAPVCC,
-      0x3C
-    )
-  ) {
+  if (!display.begin(
+        SSD1306_SWITCHCAPVCC,
+        0x3C
+      )) {
 
     Serial.println(
-      "OLED initialization failed!"
+      "OLED NOT FOUND"
     );
 
   } else {
 
     Serial.println(
-      "OLED initialized!"
+      "OLED INITIALIZED"
     );
 
-    showScreen(
-      "GHOST",
-      "KEY",
-      "Starting..."
+    oledLarge("GHOST");
+
+    delay(1000);
+
+    oledMessage(
+      "GHOST KEY",
+      "NODE 1",
+      "READER_001"
     );
+
+    delay(1500);
   }
 
-  // ==================================================
-  // SERVO
-  // ==================================================
-
-  doorServo.attach(
-    SERVO_PIN
-  );
-
-  lockDoor();
-
-  // ==================================================
-  // WIFI
-  // ==================================================
+  // ----------------------------------------------------------
+  // WiFi
+  // ----------------------------------------------------------
 
   connectWiFi();
 
-  // ==================================================
-  // SERIAL MENU
-  // ==================================================
+  // ----------------------------------------------------------
+  // Serial menu
+  // ----------------------------------------------------------
 
   Serial.println();
-  Serial.println("================================");
-  Serial.println("       SIMULATED PN532");
-  Serial.println("================================");
+  Serial.println("=================================");
+  Serial.println("       GHOST KEY NODE 1");
+  Serial.println("=================================");
+  Serial.println("READER_001");
+  Serial.println("CHENNAI LAB A");
   Serial.println();
+  Serial.println("SIMULATED PN532 COMMANDS:");
   Serial.println("1 = CARD_001");
   Serial.println("2 = CARD_002");
   Serial.println("9 = CARD_999");
-  Serial.println();
-  Serial.println("================================");
-  Serial.println();
+  Serial.println("=================================");
+
+  oledMessage(
+    "GHOST KEY",
+    "NODE 1 READY",
+    "SCAN CARD"
+  );
 }
 
-// ======================================================
+
+// ============================================================
 // LOOP
-// ======================================================
+// ============================================================
 
 void loop() {
 
-  // ==================================================
-  // CHECK WIFI
-  // ==================================================
+  // ----------------------------------------------------------
+  // WiFi monitoring
+  // ----------------------------------------------------------
 
   if (
     WiFi.status() != WL_CONNECTED
   ) {
 
     Serial.println(
-      "WiFi disconnected!"
+      "WIFI DISCONNECTED"
+    );
+
+    oledMessage(
+      "WIFI LOST",
+      "SYSTEM LOCKED"
     );
 
     lockDoor();
 
-    digitalWrite(
-      LED_PIN,
-      LOW
-    );
-
     connectWiFi();
+
+    return;
   }
 
-  // ==================================================
-  // SIMULATED CARD
-  // ==================================================
+  // ----------------------------------------------------------
+  // Serial Monitor simulated PN532
+  // ----------------------------------------------------------
 
-  String cardID =
-    simulatePN532();
+  if (Serial.available()) {
 
-  if (cardID != "") {
+    char command =
+        Serial.read();
 
-    Serial.println();
-    Serial.println(
-      "SIMULATED PN532:"
-    );
+    // CARD_001
+    if (command == '1') {
 
-    Serial.println(cardID);
+      normalAccess(
+        "CARD_001"
+      );
+    }
 
-    showScreen(
-      "CARD",
-      cardID
-    );
+    // CARD_002
+    else if (command == '2') {
 
-    delay(500);
+      normalAccess(
+        "CARD_002"
+      );
+    }
 
-    authenticateCard(
-      cardID
-    );
+    // CARD_999
+    else if (command == '9') {
 
-    Serial.println();
-    Serial.println("Ready for next card...");
-    Serial.println();
+      normalAccess(
+        "CARD_999"
+      );
+    }
   }
 
-  delay(50);
+  delay(20);
 }
