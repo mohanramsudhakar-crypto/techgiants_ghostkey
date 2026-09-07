@@ -3,6 +3,8 @@
 #include <ArduinoJson.h>
 #include <ESP32Servo.h>
 #include "mbedtls/md.h"
+#include "mbedtls/aes.h"
+#include "esp_system.h"
 
 
 // ============================================================
@@ -12,7 +14,7 @@
 const char* WIFI_SSID = "NARZO";
 const char* WIFI_PASSWORD = "aahilhere";
 
-const char* SERVER = "http://10.188.102.24:5000";
+const char* SERVER = "http://10.188.102.195:5000";
 
 
 // ============================================================
@@ -21,6 +23,19 @@ const char* SERVER = "http://10.188.102.24:5000";
 
 const char* DEVICE_ID = "READER_002";
 const char* DEVICE_SECRET = "reader_secret_002";
+
+
+// ============================================================
+// AES-128-CBC SHARED KEY
+// ============================================================
+// Must match AES_KEY_HEX in security.py ("3fae1baf5e3d4c2c9be2f1a6c88f3ac0")
+// and AES_KEY_HEX in app.js.
+// ============================================================
+
+const uint8_t AES_KEY[16] = {
+  0x3f, 0xae, 0x1b, 0xaf, 0x5e, 0x3d, 0x4c, 0x2c,
+  0x9b, 0xe2, 0xf1, 0xa6, 0xc8, 0x8f, 0x3a, 0xc0
+};
 
 
 // ============================================================
@@ -158,6 +173,177 @@ String hmacSHA256(String secret, String message)
 
 
 // ============================================================
+// AES-128-CBC HELPERS
+// ============================================================
+
+String bytesToHex(const uint8_t* data, size_t len)
+{
+    String out = "";
+
+    for (size_t i = 0; i < len; i++)
+    {
+        if (data[i] < 16)
+        {
+            out += "0";
+        }
+
+        out += String(data[i], HEX);
+    }
+
+    return out;
+}
+
+
+size_t hexToBytes(const String &hex, uint8_t* out, size_t maxLen)
+{
+    size_t len = hex.length() / 2;
+
+    if (len > maxLen)
+    {
+        len = maxLen;
+    }
+
+    for (size_t i = 0; i < len; i++)
+    {
+        String byteStr = hex.substring(i * 2, i * 2 + 2);
+
+        out[i] = (uint8_t) strtol(byteStr.c_str(), NULL, 16);
+    }
+
+    return len;
+}
+
+
+bool aesEncrypt(String plaintext, String &ivHexOut, String &dataHexOut)
+{
+    size_t inLen = plaintext.length();
+
+    size_t padLen = 16 - (inLen % 16);
+    size_t totalLen = inLen + padLen;
+
+    uint8_t* buf = (uint8_t*) malloc(totalLen);
+
+    if (!buf)
+    {
+        return false;
+    }
+
+    memcpy(buf, plaintext.c_str(), inLen);
+
+    for (size_t i = inLen; i < totalLen; i++)
+    {
+        buf[i] = (uint8_t) padLen;
+    }
+
+    uint8_t iv[16];
+    esp_fill_random(iv, 16);
+
+    uint8_t ivWorking[16];
+    memcpy(ivWorking, iv, 16);
+
+    uint8_t* outBuf = (uint8_t*) malloc(totalLen);
+
+    if (!outBuf)
+    {
+        free(buf);
+        return false;
+    }
+
+    mbedtls_aes_context ctx;
+    mbedtls_aes_init(&ctx);
+    mbedtls_aes_setkey_enc(&ctx, AES_KEY, 128);
+
+    mbedtls_aes_crypt_cbc(
+        &ctx,
+        MBEDTLS_AES_ENCRYPT,
+        totalLen,
+        ivWorking,
+        buf,
+        outBuf
+    );
+
+    mbedtls_aes_free(&ctx);
+
+    ivHexOut = bytesToHex(iv, 16);
+    dataHexOut = bytesToHex(outBuf, totalLen);
+
+    free(buf);
+    free(outBuf);
+
+    return true;
+}
+
+
+bool aesDecrypt(String ivHex, String dataHex, String &plaintextOut)
+{
+    uint8_t iv[16];
+    hexToBytes(ivHex, iv, 16);
+
+    size_t dataLen = dataHex.length() / 2;
+
+    if (dataLen == 0 || dataLen % 16 != 0)
+    {
+        return false;
+    }
+
+    uint8_t* cipherBuf = (uint8_t*) malloc(dataLen);
+    uint8_t* outBuf = (uint8_t*) malloc(dataLen);
+
+    if (!cipherBuf || !outBuf)
+    {
+        if (cipherBuf) free(cipherBuf);
+        if (outBuf) free(outBuf);
+        return false;
+    }
+
+    hexToBytes(dataHex, cipherBuf, dataLen);
+
+    mbedtls_aes_context ctx;
+    mbedtls_aes_init(&ctx);
+    mbedtls_aes_setkey_dec(&ctx, AES_KEY, 128);
+
+    mbedtls_aes_crypt_cbc(
+        &ctx,
+        MBEDTLS_AES_DECRYPT,
+        dataLen,
+        iv,
+        cipherBuf,
+        outBuf
+    );
+
+    mbedtls_aes_free(&ctx);
+
+    uint8_t padLen = outBuf[dataLen - 1];
+    size_t plainLen = dataLen;
+
+    if (padLen > 0 && padLen <= 16 && padLen <= dataLen)
+    {
+        plainLen = dataLen - padLen;
+    }
+
+    char* strBuf = (char*) malloc(plainLen + 1);
+
+    if (!strBuf)
+    {
+        free(cipherBuf);
+        free(outBuf);
+        return false;
+    }
+
+    memcpy(strBuf, outBuf, plainLen);
+    strBuf[plainLen] = '\0';
+
+    plaintextOut = String(strBuf);
+
+    free(cipherBuf);
+    free(outBuf);
+    free(strBuf);
+
+    return true;
+}
+
+
+// ============================================================
 // CARD SECRET
 // ============================================================
 
@@ -235,10 +421,47 @@ bool getChallenge(String &nonce)
 
 
     Serial.println(
-        "SERVER RESPONSE:"
+        "SERVER RESPONSE (ENCRYPTED):"
     );
 
     Serial.println(response);
+
+
+    // --------------------------------------------------------
+    // Decrypt the {"iv":..., "data":...} envelope
+    // --------------------------------------------------------
+
+    DynamicJsonDocument envelope(1024);
+
+    DeserializationError envError =
+        deserializeJson(envelope, response);
+
+    if (envError || !envelope["iv"] || !envelope["data"])
+    {
+        Serial.println("ENVELOPE PARSE ERROR");
+
+        http.end();
+
+        return false;
+    }
+
+    String plaintext;
+
+    if (!aesDecrypt(
+            envelope["iv"].as<String>(),
+            envelope["data"].as<String>(),
+            plaintext
+        ))
+    {
+        Serial.println("DECRYPTION FAILED");
+
+        http.end();
+
+        return false;
+    }
+
+    Serial.println("DECRYPTED:");
+    Serial.println(plaintext);
 
 
     DynamicJsonDocument doc(2048);
@@ -246,7 +469,7 @@ bool getChallenge(String &nonce)
     DeserializationError error =
         deserializeJson(
             doc,
-            response
+            plaintext
         );
 
 
@@ -325,6 +548,10 @@ bool sendAccess(
     );
 
 
+    // ----------------------------------------------------------
+    // Build the plaintext body, then AES-encrypt it
+    // ----------------------------------------------------------
+
     DynamicJsonDocument doc(2048);
 
 
@@ -344,13 +571,34 @@ bool sendAccess(
         credentialHMAC;
 
 
-    String requestBody;
-
+    String plaintextBody;
 
     serializeJson(
         doc,
-        requestBody
+        plaintextBody
     );
+
+    String ivHex, dataHex;
+
+    if (!aesEncrypt(plaintextBody, ivHex, dataHex))
+    {
+        Serial.println("ENCRYPTION FAILED");
+
+        http.end();
+
+        lockDoor();
+
+        return false;
+    }
+
+    DynamicJsonDocument envelopeOut(2048);
+
+    envelopeOut["iv"] = ivHex;
+    envelopeOut["data"] = dataHex;
+
+    String requestBody;
+
+    serializeJson(envelopeOut, requestBody);
 
 
     int httpCode =
@@ -369,7 +617,7 @@ bool sendAccess(
 
 
     Serial.println(
-        "SERVER RESPONSE:"
+        "SERVER RESPONSE (ENCRYPTED):"
     );
 
     Serial.println(response);
@@ -393,13 +641,53 @@ bool sendAccess(
     }
 
 
+    // ----------------------------------------------------------
+    // Decrypt the response envelope
+    // ----------------------------------------------------------
+
+    DynamicJsonDocument responseEnvelope(2048);
+
+    DeserializationError envError =
+        deserializeJson(responseEnvelope, response);
+
+    if (envError || !responseEnvelope["iv"] || !responseEnvelope["data"])
+    {
+        Serial.println("RESPONSE ENVELOPE ERROR");
+
+        http.end();
+
+        lockDoor();
+
+        return false;
+    }
+
+    String plaintextResponse;
+
+    if (!aesDecrypt(
+            responseEnvelope["iv"].as<String>(),
+            responseEnvelope["data"].as<String>(),
+            plaintextResponse
+        ))
+    {
+        Serial.println("RESPONSE DECRYPTION FAILED");
+
+        http.end();
+
+        lockDoor();
+
+        return false;
+    }
+
+    Serial.println("DECRYPTED RESPONSE:");
+    Serial.println(plaintextResponse);
+
     DynamicJsonDocument responseDoc(4096);
 
 
     DeserializationError error =
         deserializeJson(
             responseDoc,
-            response
+            plaintextResponse
         );
 
 
@@ -635,7 +923,7 @@ void normalAccess(String cardID)
 
 
     // ========================================================
-    // SEND TO SERVER
+    // SEND TO SERVER (encrypted)
     // ========================================================
 
     sendAccess(
@@ -649,6 +937,14 @@ void normalAccess(String cardID)
 
 // ============================================================
 // REPLAY ATTACK DEMO
+// ============================================================
+// Note: each call to sendAccess() still produces a *different*
+// ciphertext (fresh random IV) even though it's the exact same
+// plaintext nonce/HMAC being replayed - that's expected and
+// correct. The server decrypts both requests, sees the same
+// nonce used twice, and blocks the second one. AES encryption
+// hides the traffic; it doesn't (and isn't meant to) replace
+// the nonce-based replay check.
 // ============================================================
 
 void replayAttackDemo()
@@ -963,6 +1259,10 @@ void setup()
 
     Serial.println(
         "CHENNAI LAB B"
+    );
+
+    Serial.println(
+        "AES-128-CBC ENCRYPTION: ON"
     );
 
     Serial.println();
