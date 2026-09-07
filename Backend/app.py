@@ -1,340 +1,780 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify
 from flask_socketio import SocketIO
-
-from database import (
-    get_connection,
-    init_database
-)
-
+from datetime import datetime, timedelta, timezone
+from database import init_database,get_connection,log_access
 from security import verify_hmac
-
-from ghost_engine import check_impossible_travel
-
+from risk_engine import calculate_Risk, calculate_distance_km
 import secrets
-import time
+
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
+app.config["SECRET_KEY"] = "ghost-key-demo-secret"
 
 init_database()
 
-@app.route("/")
-def dashboard():
-    return render_template("dashboard.html")
+@app.route("/health")
+def health():
 
-@app.route("/api/challenge")
-def challenge():
+    return jsonify({
+        "status": "online",
+        "system": "Ghost Key"
+    })
+
+@app.route(
+    "/api/challenge",
+    methods=["POST"]
+)
+def create_challenge():
 
     data = request.get_json()
 
-    device_id = data.get("device_id")
-
-    conn = get_connection()
-
-    device = conn.execute("""
-        SELECT *
-        FROM devices
-        WHERE device_id=?
-        AND status='ACTIVE'
-    """, (device_id,)).fetchone()
-
-    if not device:
-        conn.close()
+    if not data:
 
         return jsonify({
-            "ok": False,
-            "reason": "UNKNOWN_DEVICE"
+            "error": "Invalid JSON"
+        }), 400
+
+
+    device_id = data.get(
+        "device_id"
+    )
+
+
+    connection = get_connection()
+
+
+    device = connection.execute("""
+        SELECT *
+        FROM devices
+        WHERE device_id = ?
+    """, (
+        device_id,
+    )).fetchone()
+
+
+    connection.close()
+
+
+    if not device:
+
+        return jsonify({
+            "error": "Unknown device"
         }), 403
+
+
+    if not device["authorized"]:
+
+        return jsonify({
+            "error": "Device unauthorized"
+        }), 403
+
 
     nonce = secrets.token_hex(32)
 
-    conn.execute("""
-        INSERT INTO challenges
-        (nonce, device_id, created_at, used)
-        VALUES (?, ?, ?, 0)
+
+    now = datetime.now(
+        timezone.utc
+    )
+
+
+    expires = (
+        now
+        +
+        timedelta(seconds=30)
+    )
+
+
+    connection = get_connection()
+
+
+    connection.execute("""
+        INSERT INTO challenges (
+
+            nonce,
+            device_id,
+            created_at,
+            expires_at,
+            used
+
+        )
+
+        VALUES (?, ?, ?, ?, 0)
     """, (
+
         nonce,
+
         device_id,
-        int(time.time())
+
+        now.isoformat(),
+
+        expires.isoformat()
+
     ))
 
-    conn.commit()
-    conn.close()
+
+    connection.commit()
+
+    connection.close()
+
 
     return jsonify({
-        "ok": True,
-        "nonce": nonce
+
+        "nonce": nonce,
+
+        "expires_in": 30
+
     })
 
-@app.post("/api/authenticate")
-def authenticate():
+
+# ============================================================
+# ACCESS
+# ============================================================
+
+@app.route(
+    "/api/access",
+    methods=["POST"]
+)
+def access_request():
 
     data = request.get_json()
-    device_id = data.get("device_id")
-    nonce = data.get("nonce")
 
-    response = data.get("response")
 
-    now = int(time.time())
-
-    conn = get_connection()
-
-    device = conn.execute("""
-        SELECT
-            devices.*,
-            zones.name AS zone,
-            zones.latitude,
-            zones.longitude
-        FROM devices
-        JOIN zones
-        ON zones.id = devices.zone_id
-        WHERE devices.device_id=?
-        AND devices.status='ACTIVE'
-    """, (device_id,)).fetchone()
-
-    if not device:
-       conn.close()
-
-       return jsonify ( {
-          "decision":"BLOCK",
-          "risk": 100,
-          "reason": "UNKNOWN_DEVICE",
-       })
-
-    challenge = conn.execute("""
-        SELECT *
-        FROM challenges
-        WHERE nonce =?
-        AND device_id=?
-        """, (nonce, device_id)).fetchone()
-
-    if not challenge:
-        conn.close()
+    if not data:
 
         return jsonify({
+
             "decision": "BLOCK",
-            "risk": 100,
-            "reason": "INVALID_NONCE"
-        })
 
-    if challenge['used']:
-       conn.close()
+            "reason": "Invalid request"
 
-       return jsonify({
-          "decsion":"BLOCK",
-          "risK": 100,
-          "reason":"REPLAY_ATTACK"
-       })
+        }), 400
 
-    if now-challenge['created_at'] > 30:
-       conn.execute("""
-            UPDATE challenges
-            SET used =1
-            WHERE nonce=?
-        """,(nonce,))
 
-       conn.commit()
-       conn.close()
+    device_id = data.get(
+        "device_id"
+    )
 
-       return jsonify({"decision":"BLOCK",
-                        "risk":100,
-                        "reason":"EXPIRED_CHALLENGE"
-         })
-    
-    message = f"{device_id}:{uid}:{nonce}"
+    credential_id = data.get(
+        "credential_id"
+    )
 
-    if not verify_hmac(device["device_secret"],
-                       message,
-                       response
-    ):
-       
-       conn.close()
+    nonce = data.get(
+        "nonce"
+    )
 
-       return jsonify({
-         "decision": "BLOCK",
-         "risk": 100,
-         "reason": "INVALID_DEVICE_SIGNATURE"  
-          
-       })
-    conn.execute("""
-        UPDATE challenges
-        SET used=1
-        WHERE nonce=?
-    """, (nonce,))
+    device_hmac = data.get(
+        "device_hmac"
+    )
 
-    employee = conn.execute("""
+    credential_hmac = data.get(
+        "credential_hmac"
+    )
+
+
+    connection = get_connection()
+
+
+    device = connection.execute("""
         SELECT *
-        FROM employees
-        WHERE credential_uid=?
-        AND status='ACTIVE'
-    """, (uid,)).fetchone()
+        FROM devices
+        WHERE device_id = ?
+    """, (
+        device_id,
+    )).fetchone()
 
-    risk = 0
-    reasons = []
 
-    if not employee:
-        risk += 100
-        reasons.append("UNKNOWN_CREDENTIAL")
+    credential = connection.execute("""
+        SELECT *
+        FROM credentials
+        WHERE credential_id = ?
+    """, (
+        credential_id,
+    )).fetchone()
 
-    else:
 
-        previous = conn.execute("""
-            SELECT
-                access_logs.*,
-                zones.latitude,
-                zones.longitude
+    challenge = connection.execute("""
+        SELECT *
+        FROM challenges
+        WHERE nonce = ?
+    """, (
+        nonce,
+    )).fetchone()
+
+
+    connection.close()
+
+
+    # ========================================================
+    # DEVICE VALIDATION
+    # ========================================================
+
+    if not device:
+
+        return jsonify({
+
+            "decision": "BLOCK",
+
+            "risk_score": 60,
+
+            "risk_level": "HIGH",
+
+            "reason": "Unknown device"
+
+        }), 403
+
+
+    # ========================================================
+    # CHALLENGE VALIDATION
+    # ========================================================
+
+    if not challenge:
+
+        return jsonify({
+
+            "decision": "BLOCK",
+
+            "risk_score": 80,
+
+            "risk_level": "HIGH",
+
+            "reason": "Invalid challenge"
+
+        }), 403
+
+
+    # ========================================================
+    # REPLAY
+    # ========================================================
+
+    if challenge["used"]:
+
+        log_access(
+
+            credential_id,
+
+            credential["user_name"]
+            if credential
+            else "Unknown",
+
+            device_id,
+
+            device["location_name"],
+
+            "BLOCK",
+
+            80,
+
+            "HIGH",
+
+            "Replay attack detected",
+
+            "FAILED"
+
+        )
+
+
+        return jsonify({
+
+            "decision": "BLOCK",
+
+            "risk_score": 80,
+
+            "risk_level": "HIGH",
+
+            "reason":
+                "Replay attack detected"
+
+        }), 403
+
+
+    # ========================================================
+    # EXPIRATION
+    # ========================================================
+
+    expires = datetime.fromisoformat(
+        challenge["expires_at"]
+    )
+
+
+    if (
+        datetime.now(timezone.utc)
+        >
+        expires
+    ):
+
+        return jsonify({
+
+            "decision": "BLOCK",
+
+            "risk_score": 80,
+
+            "risk_level": "HIGH",
+
+            "reason":
+                "Challenge expired"
+
+        }), 403
+
+
+    # ========================================================
+    # MARK NONCE USED
+    # ========================================================
+
+    connection = get_connection()
+
+
+    connection.execute("""
+        UPDATE challenges
+        SET used = 1
+        WHERE nonce = ?
+    """, (
+        nonce,
+    ))
+
+
+    connection.commit()
+
+    connection.close()
+
+
+    # ========================================================
+    # DEVICE HMAC
+    # ========================================================
+
+    device_message = (
+        nonce
+        +
+        "|"
+        +
+        device_id
+    )
+
+
+    device_valid = verify_hmac(
+
+        device["device_secret"],
+
+        device_message,
+
+        device_hmac
+
+    )
+
+
+    # ========================================================
+    # CARD HMAC
+    # ========================================================
+
+    credential_valid = False
+
+
+    if credential:
+
+        credential_message = (
+
+            nonce
+            +
+            "|"
+            +
+            credential_id
+
+        )
+
+
+        credential_valid = verify_hmac(
+
+            credential["credential_secret"],
+
+            credential_message,
+
+            credential_hmac
+
+        )
+
+
+    # ========================================================
+    # IMPOSSIBLE TRAVEL
+    # ========================================================
+
+    impossible_travel = False
+
+
+    if credential:
+
+        connection = get_connection()
+
+
+        previous = connection.execute("""
+            SELECT *
             FROM access_logs
-            JOIN zones
-            ON zones.name = access_logs.zone
-            WHERE employee_code=?
-            AND result='ALLOW'
-            ORDER BY timestamp DESC
+
+            WHERE credential_id = ?
+
+            AND decision = 'ALLOW'
+
+            ORDER BY id DESC
+
             LIMIT 1
-        """, (employee["employee_code"],)).fetchone()
+        """, (
+            credential_id,
+        )).fetchone()
+
+
+        connection.close()
+
 
         if previous:
 
-            current_zone = {
-                "latitude": device["latitude"],
-                "longitude": device["longitude"]
-            }
+            connection = get_connection()
 
-            previous_zone = {
-                "latitude": previous["latitude"],
-                "longitude": previous["longitude"]
-            }
 
-            travel = check_impossible_travel(
-                previous_zone,
-                current_zone,
-                now - previous["timestamp"]
-            )
+            previous_device = connection.execute("""
+                SELECT *
+                FROM devices
+                WHERE device_id = ?
+            """, (
+                previous["device_id"],
+            )).fetchone()
 
-            if travel["impossible"]:
-                risk += 90
-                reasons.append(
-                    "IMPOSSIBLE_TRAVEL"
+
+            connection.close()
+
+
+            if previous_device:
+
+                distance = calculate_distance_km(
+
+                    previous_device["latitude"],
+
+                    previous_device["longitude"],
+
+                    device["latitude"],
+
+                    device["longitude"]
+
                 )
 
-    if risk >= 60:
-        decision = "BLOCK"
-    else:
-        decision = "ALLOW"
 
-    reason = ",".join(reasons) if reasons else "NORMAL"
+                previous_time = datetime.fromisoformat(
 
-    employee_code = (
-        employee["employee_code"]
-        if employee else None
+                    previous["timestamp"]
+
+                )
+
+
+                current_time = datetime.now(
+                    timezone.utc
+                )
+
+
+                seconds = (
+
+                    current_time
+                    -
+                    previous_time
+
+                ).total_seconds()
+
+
+                if seconds > 0:
+
+                    speed = (
+
+                        distance
+                        /
+                        (seconds / 3600)
+
+                    )
+
+
+                    # Demonstration threshold
+
+                    if speed > 900:
+
+                        impossible_travel = True
+
+
+    # ========================================================
+    # RISK
+    # ========================================================
+
+    score, risk_level, reasons = calculate_risk(
+
+        credential_valid,
+
+        device_valid,
+
+        impossible_travel=
+            impossible_travel
+
     )
 
-    conn.execute("""
-        INSERT INTO access_logs
-        (
-            timestamp,
-            employee_code,
-            device_id,
-            zone,
-            result,
-            risk_score,
-            reason,
-            nonce
+
+    # ========================================================
+    # AUTHORIZATION
+    # ========================================================
+
+    authorized = (
+
+        credential is not None
+
+        and
+
+        credential["authorized"]
+
+    )
+
+
+    if not authorized:
+
+        score += 20
+
+        risk_level = "HIGH"
+
+        reasons.append(
+            "Credential unauthorized"
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        now,
-        employee_code,
+
+
+    # ========================================================
+    # FINAL DECISION
+    # ========================================================
+
+    if (
+
+        device_valid
+
+        and
+
+        credential_valid
+
+        and
+
+        authorized
+
+        and
+
+        score <= 50
+
+    ):
+
+        decision = "ALLOW"
+
+        authentication_result = "SUCCESS"
+
+
+    else:
+
+        decision = "BLOCK"
+
+        authentication_result = "FAILED"
+
+
+    reason = "; ".join(
+        reasons
+    )
+
+
+    user_name = (
+
+        credential["user_name"]
+
+        if credential
+
+        else "Unknown"
+
+    )
+
+
+    # ========================================================
+    # DATABASE LOG
+    # ========================================================
+
+    log_access(
+
+        credential_id,
+
+        user_name,
+
         device_id,
-        device["zone"],
+
+        device["location_name"],
+
         decision,
-        risk,
+
+        score,
+
+        risk_level,
+
         reason,
-        nonce
-    ))
 
-    conn.commit()
-    conn.close()
+        authentication_result
 
-    result = {
-        "decision": decision,
-        "risk": risk,
-        "reason": reason,
-        "zone": device["zone"]
+    )
+
+
+    # ========================================================
+    # DASHBOARD EVENT
+    # ========================================================
+
+    event = {
+
+        "timestamp":
+            datetime.now(
+                timezone.utc
+            ).isoformat(),
+
+        "credential_id":
+            credential_id,
+
+        "user_name":
+            user_name,
+
+        "device_id":
+            device_id,
+
+        "location":
+            device["location_name"],
+
+        "decision":
+            decision,
+
+        "risk_score":
+            score,
+
+        "risk_level":
+            risk_level,
+
+        "reason":
+            reason
+
     }
+
 
     socketio.emit(
         "access_event",
-        result
+        event
     )
 
-    return jsonify(result)
+
+    return jsonify(event)
 
 
-@app.get("/api/logs")
-def logs():
+# ============================================================
+# LOGS
+# ============================================================
 
-    conn = get_connection()
+@app.route(
+    "/api/logs",
+    methods=["GET"]
+)
+def get_logs():
 
-    rows = conn.execute("""
+    connection = get_connection()
+
+
+    logs = connection.execute("""
         SELECT *
         FROM access_logs
-        ORDER BY timestamp DESC
+        ORDER BY id DESC
         LIMIT 100
     """).fetchall()
 
-    conn.close()
+
+    connection.close()
+
 
     return jsonify([
+
         dict(row)
-        for row in rows
+
+        for row in logs
+
     ])
 
 
-@app.get("/api/stats")
-def stats():
+# ============================================================
+# STATISTICS
+# ============================================================
 
-    conn = get_connection()
+@app.route(
+    "/api/stats",
+    methods=["GET"]
+)
+def get_stats():
 
-    total = conn.execute(
-        "SELECT COUNT(*) FROM access_logs"
-    ).fetchone()[0]
+    connection = get_connection()
 
-    allowed = conn.execute(
-        "SELECT COUNT(*) FROM access_logs WHERE result='ALLOW'"
-    ).fetchone()[0]
 
-    blocked = conn.execute(
-        "SELECT COUNT(*) FROM access_logs WHERE result='BLOCK'"
-    ).fetchone()[0]
-
-    alerts = conn.execute("""
-        SELECT COUNT(*)
+    total = connection.execute("""
+        SELECT COUNT(*) AS count
         FROM access_logs
-        WHERE reason LIKE '%IMPOSSIBLE%'
-        OR reason LIKE '%REPLAY%'
-    """).fetchone()[0]
+    """).fetchone()["count"]
 
-    conn.close()
+
+    allowed = connection.execute("""
+        SELECT COUNT(*) AS count
+        FROM access_logs
+        WHERE decision = 'ALLOW'
+    """).fetchone()["count"]
+
+
+    blocked = connection.execute("""
+        SELECT COUNT(*) AS count
+        FROM access_logs
+        WHERE decision = 'BLOCK'
+    """).fetchone()["count"]
+
+
+    critical = connection.execute("""
+        SELECT COUNT(*) AS count
+        FROM access_logs
+        WHERE risk_level = 'CRITICAL'
+    """).fetchone()["count"]
+
+
+    connection.close()
+
 
     return jsonify({
+
         "total": total,
+
         "allowed": allowed,
+
         "blocked": blocked,
-        "alerts": alerts
+
+        "critical": critical
+
     })
 
 
+# ============================================================
+# START
+# ============================================================
+
 if __name__ == "__main__":
 
-    context = (
-        "certs/server.crt",
-        "certs/server.key"
+    print()
+    print("==============================")
+    print("       GHOST KEY SERVER")
+    print("==============================")
+    print()
+    print(
+        "Server: http://0.0.0.0:5000"
     )
+    print()
+
 
     socketio.run(
+
         app,
+
         host="0.0.0.0",
+
         port=5000,
-        ssl_context=context,
-        allow_unsafe_werkzeug=True
+
+        debug=True
+
     )
