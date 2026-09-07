@@ -1,162 +1,477 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 from flask_socketio import SocketIO
-from datetime import datetime, timedelta, timezone
-from database import init_database,get_connection,log_access
-from security import verify_hmac
-from risk_engine import calculate_Risk, calculate_distance_km
+from datetime import datetime, timezone
 import secrets
+import hashlib
+import hmac
+import math
 
+from database import get_connection, initialize_database
+
+
+# ============================================================
+# FLASK SETUP
+# ============================================================
 
 app = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins="*")
-app.config["SECRET_KEY"] = "ghost-key-demo-secret"
 
-init_database()
+CORS(app)
 
-@app.route("/health")
+socketio = SocketIO(
+    app,
+    cors_allowed_origins="*"
+)
+
+
+# ============================================================
+# DATABASE INITIALIZATION
+# ============================================================
+
+initialize_database()
+
+
+# ============================================================
+# TIME FUNCTIONS
+# ============================================================
+
+def now_utc():
+    """
+    Return current UTC time as timezone-aware datetime.
+    """
+    return datetime.now(timezone.utc)
+
+
+def iso_now():
+    """
+    Return current UTC time as ISO formatted string.
+    """
+    return now_utc().isoformat()
+
+
+def parse_time(value):
+    """
+    Convert stored time into a timezone-aware datetime.
+
+    Supports:
+    - Unix timestamps (int/float)
+    - ISO datetime strings
+    """
+
+    if value is None:
+        return None
+
+    # SQLite may return Unix timestamp
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(
+            value,
+            tz=timezone.utc
+        )
+
+    # ISO formatted string
+    if isinstance(value, str):
+        parsed = datetime.fromisoformat(value)
+
+        # If the string has no timezone,
+        # assume UTC.
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+
+        return parsed
+
+    raise TypeError(
+        f"Unsupported time value: {type(value)}"
+    )
+
+
+# ============================================================
+# HMAC-SHA256
+# ============================================================
+
+def hmac_sha256(secret, message):
+    """
+    Generate HMAC-SHA256 hexadecimal digest.
+    """
+
+    return hmac.new(
+        secret.encode("utf-8"),
+        message.encode("utf-8"),
+        hashlib.sha256
+    ).hexdigest()
+
+
+def verify_hmac(secret, message, received_hmac):
+    """
+    Securely compare received HMAC with expected HMAC.
+    """
+
+    if not received_hmac:
+        return False
+
+    expected = hmac_sha256(
+        secret,
+        message
+    )
+
+    return hmac.compare_digest(
+        expected,
+        received_hmac
+    )
+
+
+# ============================================================
+# HAVERSINE DISTANCE
+# ============================================================
+
+def haversine_distance(
+    lat1,
+    lon1,
+    lat2,
+    lon2
+):
+    """
+    Calculate distance between two GPS coordinates
+    in kilometers.
+    """
+
+    earth_radius = 6371.0
+
+    lat1 = math.radians(lat1)
+    lon1 = math.radians(lon1)
+
+    lat2 = math.radians(lat2)
+    lon2 = math.radians(lon2)
+
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+
+    a = (
+        math.sin(dlat / 2) ** 2
+        +
+        math.cos(lat1)
+        * math.cos(lat2)
+        * math.sin(dlon / 2) ** 2
+    )
+
+    c = 2 * math.atan2(
+        math.sqrt(a),
+        math.sqrt(1 - a)
+    )
+
+    return earth_radius * c
+
+
+# ============================================================
+# RISK LEVEL
+# ============================================================
+
+def get_risk_level(score):
+
+    if score <= 20:
+        return "LOW"
+
+    elif score <= 50:
+        return "MEDIUM"
+
+    elif score <= 80:
+        return "HIGH"
+
+    else:
+        return "CRITICAL"
+
+
+# ============================================================
+# RISK ENGINE
+# ============================================================
+
+def calculate_risk(
+    credential_authorized=True,
+    device_authorized=True,
+    replay=False,
+    impossible_travel=False,
+    unusual_location=False,
+    repeated_failures=False
+):
+
+    score = 0
+    reasons = []
+
+    # --------------------------------------------------------
+    # Unauthorized credential
+    # --------------------------------------------------------
+
+    if not credential_authorized:
+
+        score += 50
+
+        reasons.append(
+            "Unauthorized credential"
+        )
+
+    # --------------------------------------------------------
+    # Unauthorized device
+    # --------------------------------------------------------
+
+    if not device_authorized:
+
+        score += 60
+
+        reasons.append(
+            "Unauthorized device"
+        )
+
+    # --------------------------------------------------------
+    # Replay attack
+    # --------------------------------------------------------
+
+    if replay:
+
+        score += 80
+
+        reasons.append(
+            "Replay attack detected"
+        )
+
+    # --------------------------------------------------------
+    # Impossible travel
+    # --------------------------------------------------------
+
+    if impossible_travel:
+
+        score += 60
+
+        reasons.append(
+            "Impossible travel detected"
+        )
+
+    # --------------------------------------------------------
+    # Unusual location
+    # --------------------------------------------------------
+
+    if unusual_location:
+
+        score += 25
+
+        reasons.append(
+            "Unusual location"
+        )
+
+    # --------------------------------------------------------
+    # Repeated failures
+    # --------------------------------------------------------
+
+    if repeated_failures:
+
+        score += 20
+
+        reasons.append(
+            "Repeated authentication failures"
+        )
+
+    # --------------------------------------------------------
+    # Default reason
+    # --------------------------------------------------------
+
+    if not reasons:
+
+        reasons.append(
+            "Normal authentication"
+        )
+
+    level = get_risk_level(score)
+
+    return {
+        "score": score,
+        "level": level,
+        "reasons": reasons
+    }
+
+
+# ============================================================
+# ACCESS LOGGING
+# ============================================================
+
+def save_access_log(
+    credential_id,
+    user_name,
+    device_id,
+    location_name,
+    decision,
+    risk_score,
+    risk_level,
+    reason,
+    authentication_result
+):
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO access_logs
+        (
+            timestamp,
+            credential_id,
+            user_name,
+            device_id,
+            location_name,
+            decision,
+            risk_score,
+            risk_level,
+            reason,
+            authentication_result
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            iso_now(),
+            credential_id,
+            user_name,
+            device_id,
+            location_name,
+            decision,
+            risk_score,
+            risk_level,
+            reason,
+            authentication_result
+        )
+    )
+
+    conn.commit()
+
+    conn.close()
+
+
+# ============================================================
+# REAL-TIME EVENT
+# ============================================================
+
+def emit_access_event(data):
+
+    socketio.emit(
+        "access_event",
+        data
+    )
+
+
+# ============================================================
+# HEALTH CHECK
+# ============================================================
+
+@app.route(
+    "/health",
+    methods=["GET"]
+)
 def health():
 
     return jsonify({
         "status": "online",
-        "system": "Ghost Key"
+        "service": "Ghost Key Backend",
+        "time": iso_now()
     })
+
+
+# ============================================================
+# CHALLENGE ENDPOINT
+# ============================================================
 
 @app.route(
     "/api/challenge",
-    methods=["POST"]
+    methods=["GET"]
 )
 def create_challenge():
 
-    data = request.get_json()
+    # --------------------------------------------------------
+    # Generate cryptographically secure nonce
+    # --------------------------------------------------------
 
-    if not data:
+    nonce = secrets.token_hex(16)
 
-        return jsonify({
-            "error": "Invalid JSON"
-        }), 400
+    created_at = now_utc()
 
-
-    device_id = data.get(
-        "device_id"
+    expires_at = (
+        created_at.timestamp()
+        + 30
     )
 
+    # --------------------------------------------------------
+    # Store challenge
+    # --------------------------------------------------------
 
-    connection = get_connection()
+    conn = get_connection()
 
+    cursor = conn.cursor()
 
-    device = connection.execute("""
-        SELECT *
-        FROM devices
-        WHERE device_id = ?
-    """, (
-        device_id,
-    )).fetchone()
-
-
-    connection.close()
-
-
-    if not device:
-
-        return jsonify({
-            "error": "Unknown device"
-        }), 403
-
-
-    if not device["authorized"]:
-
-        return jsonify({
-            "error": "Device unauthorized"
-        }), 403
-
-
-    nonce = secrets.token_hex(32)
-
-
-    now = datetime.now(
-        timezone.utc
-    )
-
-
-    expires = (
-        now
-        +
-        timedelta(seconds=30)
-    )
-
-
-    connection = get_connection()
-
-
-    connection.execute("""
-        INSERT INTO challenges (
-
+    cursor.execute(
+        """
+        INSERT INTO challenges
+        (
             nonce,
             device_id,
             created_at,
             expires_at,
             used
-
         )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            nonce,
+            "",
+            created_at.timestamp(),
+            expires_at,
+            0
+        )
+    )
 
-        VALUES (?, ?, ?, ?, 0)
-    """, (
+    conn.commit()
 
-        nonce,
+    conn.close()
 
-        device_id,
-
-        now.isoformat(),
-
-        expires.isoformat()
-
-    ))
-
-
-    connection.commit()
-
-    connection.close()
-
+    # --------------------------------------------------------
+    # Return challenge
+    # --------------------------------------------------------
 
     return jsonify({
-
         "nonce": nonce,
-
         "expires_in": 30
-
     })
 
 
 # ============================================================
-# ACCESS
+# ACCESS ENDPOINT
 # ============================================================
 
 @app.route(
     "/api/access",
     methods=["POST"]
 )
-def access_request():
+def access():
 
-    data = request.get_json()
+    # ========================================================
+    # READ REQUEST
+    # ========================================================
 
+    data = request.get_json(
+        silent=True
+    )
 
     if not data:
 
         return jsonify({
-
             "decision": "BLOCK",
-
-            "reason": "Invalid request"
-
+            "risk_score": 100,
+            "risk_level": "CRITICAL",
+            "reason": "Invalid request body",
+            "authentication_result": "FAILED"
         }), 400
-
-
-    device_id = data.get(
-        "device_id"
-    )
 
     credential_id = data.get(
         "credential_id"
+    )
+
+    device_id = data.get(
+        "device_id"
     )
 
     nonce = data.get(
@@ -171,39 +486,185 @@ def access_request():
         "credential_hmac"
     )
 
+    # ========================================================
+    # BASIC VALIDATION
+    # ========================================================
 
-    connection = get_connection()
+    if not credential_id:
+        return jsonify({
+            "decision": "BLOCK",
+            "risk_score": 100,
+            "risk_level": "CRITICAL",
+            "reason": "Missing credential ID",
+            "authentication_result": "FAILED"
+        }), 400
 
+    if not device_id:
+        return jsonify({
+            "decision": "BLOCK",
+            "risk_score": 100,
+            "risk_level": "CRITICAL",
+            "reason": "Missing device ID",
+            "authentication_result": "FAILED"
+        }), 400
 
-    device = connection.execute("""
-        SELECT *
-        FROM devices
-        WHERE device_id = ?
-    """, (
-        device_id,
-    )).fetchone()
+    if not nonce:
+        return jsonify({
+            "decision": "BLOCK",
+            "risk_score": 100,
+            "risk_level": "CRITICAL",
+            "reason": "Missing challenge nonce",
+            "authentication_result": "FAILED"
+        }), 400
 
+    # ========================================================
+    # DATABASE CONNECTION
+    # ========================================================
 
-    credential = connection.execute("""
-        SELECT *
-        FROM credentials
-        WHERE credential_id = ?
-    """, (
-        credential_id,
-    )).fetchone()
+    conn = get_connection()
 
+    cursor = conn.cursor()
 
-    challenge = connection.execute("""
+    # ========================================================
+    # FIND CHALLENGE
+    # ========================================================
+
+    cursor.execute(
+        """
         SELECT *
         FROM challenges
         WHERE nonce = ?
-    """, (
-        nonce,
-    )).fetchone()
+        """,
+        (nonce,)
+    )
 
+    challenge = cursor.fetchone()
 
-    connection.close()
+    if not challenge:
 
+        conn.close()
+
+        return jsonify({
+            "decision": "BLOCK",
+            "risk_score": 80,
+            "risk_level": "HIGH",
+            "reason": "Invalid challenge",
+            "authentication_result": "FAILED"
+        }), 403
+
+    # ========================================================
+    # REPLAY DETECTION
+    # ========================================================
+
+    if challenge["used"]:
+
+        conn.close()
+
+        risk = calculate_risk(
+            replay=True
+        )
+
+        save_access_log(
+            credential_id,
+            "Unknown",
+            device_id,
+            "Unknown",
+            "BLOCK",
+            risk["score"],
+            risk["level"],
+            "Replay attack detected",
+            "REPLAY_DETECTED"
+        )
+
+        event = {
+            "timestamp": iso_now(),
+            "credential_id": credential_id,
+            "user_name": "Unknown",
+            "device_id": device_id,
+            "location_name": "Unknown",
+            "decision": "BLOCK",
+            "risk_score": risk["score"],
+            "risk_level": risk["level"],
+            "reason": "Replay attack detected",
+            "authentication_result": "REPLAY_DETECTED"
+        }
+
+        emit_access_event(event)
+
+        return jsonify(event), 403
+
+    # ========================================================
+    # CHECK EXPIRATION
+    # ========================================================
+
+    current_time = now_utc()
+
+    expires_at = parse_time(
+        challenge["expires_at"]
+    )
+
+    if current_time > expires_at:
+
+        # Mark expired challenge as used
+        cursor.execute(
+            """
+            UPDATE challenges
+            SET used = 1
+            WHERE nonce = ?
+            """,
+            (nonce,)
+        )
+
+        conn.commit()
+
+        conn.close()
+
+        risk = calculate_risk(
+            replay=True
+        )
+
+        return jsonify({
+            "decision": "BLOCK",
+            "risk_score": risk["score"],
+            "risk_level": risk["level"],
+            "reason": "Challenge expired",
+            "authentication_result": "EXPIRED"
+        }), 403
+
+    # ========================================================
+    # MARK CHALLENGE AS USED
+    # ========================================================
+
+    cursor.execute(
+        """
+        UPDATE challenges
+        SET
+            used = 1,
+            device_id = ?
+        WHERE nonce = ?
+        """,
+        (
+            device_id,
+            nonce
+        )
+    )
+
+    conn.commit()
+
+    # ========================================================
+    # FIND DEVICE
+    # ========================================================
+
+    cursor.execute(
+        """
+        SELECT *
+        FROM devices
+        WHERE device_id = ?
+        """,
+        (device_id,)
+    )
+
+    device = cursor.fetchone()
 
     # ========================================================
     # DEVICE VALIDATION
@@ -211,458 +672,590 @@ def access_request():
 
     if not device:
 
-        return jsonify({
+        conn.close()
 
-            "decision": "BLOCK",
-
-            "risk_score": 60,
-
-            "risk_level": "HIGH",
-
-            "reason": "Unknown device"
-
-        }), 403
-
-
-    # ========================================================
-    # CHALLENGE VALIDATION
-    # ========================================================
-
-    if not challenge:
-
-        return jsonify({
-
-            "decision": "BLOCK",
-
-            "risk_score": 80,
-
-            "risk_level": "HIGH",
-
-            "reason": "Invalid challenge"
-
-        }), 403
-
-
-    # ========================================================
-    # REPLAY
-    # ========================================================
-
-    if challenge["used"]:
-
-        log_access(
-
-            credential_id,
-
-            credential["user_name"]
-            if credential
-            else "Unknown",
-
-            device_id,
-
-            device["location_name"],
-
-            "BLOCK",
-
-            80,
-
-            "HIGH",
-
-            "Replay attack detected",
-
-            "FAILED"
-
+        risk = calculate_risk(
+            device_authorized=False
         )
 
-
-        return jsonify({
-
+        event = {
+            "timestamp": iso_now(),
+            "credential_id": credential_id,
+            "user_name": "Unknown",
+            "device_id": device_id,
+            "location_name": "Unknown",
             "decision": "BLOCK",
+            "risk_score": risk["score"],
+            "risk_level": risk["level"],
+            "reason": "Unknown device",
+            "authentication_result": "INVALID_DEVICE"
+        }
 
-            "risk_score": 80,
+        save_access_log(
+            credential_id,
+            "Unknown",
+            device_id,
+            "Unknown",
+            "BLOCK",
+            risk["score"],
+            risk["level"],
+            "Unknown device",
+            "INVALID_DEVICE"
+        )
 
-            "risk_level": "HIGH",
+        emit_access_event(event)
 
-            "reason":
-                "Replay attack detected"
-
-        }), 403
-
+        return jsonify(event), 403
 
     # ========================================================
-    # EXPIRATION
+    # DEVICE AUTHORIZATION
     # ========================================================
 
-    expires = datetime.fromisoformat(
-        challenge["expires_at"]
+    device_authorized = bool(
+        device["authorized"]
     )
 
-
-    if (
-        datetime.now(timezone.utc)
-        >
-        expires
-    ):
-
-        return jsonify({
-
-            "decision": "BLOCK",
-
-            "risk_score": 80,
-
-            "risk_level": "HIGH",
-
-            "reason":
-                "Challenge expired"
-
-        }), 403
-
-
     # ========================================================
-    # MARK NONCE USED
-    # ========================================================
-
-    connection = get_connection()
-
-
-    connection.execute("""
-        UPDATE challenges
-        SET used = 1
-        WHERE nonce = ?
-    """, (
-        nonce,
-    ))
-
-
-    connection.commit()
-
-    connection.close()
-
-
-    # ========================================================
-    # DEVICE HMAC
+    # VERIFY DEVICE HMAC
     # ========================================================
 
     device_message = (
         nonce
-        +
-        "|"
-        +
-        device_id
+        + "|"
+        + device_id
     )
-
 
     device_valid = verify_hmac(
-
         device["device_secret"],
-
         device_message,
-
         device_hmac
-
     )
 
+    if not device_valid:
 
-    # ========================================================
-    # CARD HMAC
-    # ========================================================
+        conn.close()
 
-    credential_valid = False
-
-
-    if credential:
-
-        credential_message = (
-
-            nonce
-            +
-            "|"
-            +
-            credential_id
-
+        risk = calculate_risk(
+            device_authorized=device_authorized
         )
 
+        # Increase risk for invalid HMAC
+        risk["score"] += 50
 
-        credential_valid = verify_hmac(
-
-            credential["credential_secret"],
-
-            credential_message,
-
-            credential_hmac
-
+        risk["level"] = get_risk_level(
+            risk["score"]
         )
 
+        risk["reasons"].append(
+            "Invalid device HMAC"
+        )
+
+        event = {
+            "timestamp": iso_now(),
+            "credential_id": credential_id,
+            "user_name": "Unknown",
+            "device_id": device_id,
+            "location_name": device["location_name"],
+            "decision": "BLOCK",
+            "risk_score": risk["score"],
+            "risk_level": risk["level"],
+            "reason": "Invalid device HMAC",
+            "authentication_result": "INVALID_DEVICE_HMAC"
+        }
+
+        save_access_log(
+            credential_id,
+            "Unknown",
+            device_id,
+            device["location_name"],
+            "BLOCK",
+            risk["score"],
+            risk["level"],
+            "Invalid device HMAC",
+            "INVALID_DEVICE_HMAC"
+        )
+
+        emit_access_event(event)
+
+        return jsonify(event), 403
 
     # ========================================================
-    # IMPOSSIBLE TRAVEL
+    # FIND CREDENTIAL
+    # ========================================================
+
+    cursor.execute(
+        """
+        SELECT *
+        FROM credentials
+        WHERE credential_id = ?
+        """,
+        (credential_id,)
+    )
+
+    credential = cursor.fetchone()
+
+    # ========================================================
+    # UNKNOWN CREDENTIAL
+    # ========================================================
+
+    if not credential:
+
+        conn.close()
+
+        risk = calculate_risk(
+            credential_authorized=False
+        )
+
+        event = {
+            "timestamp": iso_now(),
+            "credential_id": credential_id,
+            "user_name": "Unknown",
+            "device_id": device_id,
+            "location_name": device["location_name"],
+            "decision": "BLOCK",
+            "risk_score": risk["score"],
+            "risk_level": risk["level"],
+            "reason": "Unknown credential",
+            "authentication_result": "INVALID_CREDENTIAL"
+        }
+
+        save_access_log(
+            credential_id,
+            "Unknown",
+            device_id,
+            device["location_name"],
+            "BLOCK",
+            risk["score"],
+            risk["level"],
+            "Unknown credential",
+            "INVALID_CREDENTIAL"
+        )
+
+        emit_access_event(event)
+
+        return jsonify(event), 403
+
+    # ========================================================
+    # CREDENTIAL AUTHORIZATION
+    # ========================================================
+
+    credential_authorized = bool(
+        credential["authorized"]
+    )
+
+    user_name = credential["user_name"]
+
+    # ========================================================
+    # VERIFY CREDENTIAL HMAC
+    # ========================================================
+
+    credential_message = (
+        nonce
+        + "|"
+        + credential_id
+    )
+
+    credential_valid = verify_hmac(
+        credential["credential_secret"],
+        credential_message,
+        credential_hmac
+    )
+
+    if not credential_valid:
+
+        conn.close()
+
+        risk = calculate_risk(
+            credential_authorized=credential_authorized
+        )
+
+        # Add invalid HMAC risk
+        risk["score"] += 50
+
+        risk["level"] = get_risk_level(
+            risk["score"]
+        )
+
+        risk["reasons"].append(
+            "Invalid credential HMAC"
+        )
+
+        event = {
+            "timestamp": iso_now(),
+            "credential_id": credential_id,
+            "user_name": user_name,
+            "device_id": device_id,
+            "location_name": device["location_name"],
+            "decision": "BLOCK",
+            "risk_score": risk["score"],
+            "risk_level": risk["level"],
+            "reason": "Invalid credential HMAC",
+            "authentication_result": "INVALID_CREDENTIAL_HMAC"
+        }
+
+        save_access_log(
+            credential_id,
+            user_name,
+            device_id,
+            device["location_name"],
+            "BLOCK",
+            risk["score"],
+            risk["level"],
+            "Invalid credential HMAC",
+            "INVALID_CREDENTIAL_HMAC"
+        )
+
+        emit_access_event(event)
+
+        return jsonify(event), 403
+
+    # ========================================================
+    # IMPOSSIBLE TRAVEL DETECTION
     # ========================================================
 
     impossible_travel = False
+    travel_reason = ""
 
-
-    if credential:
-
-        connection = get_connection()
-
-
-        previous = connection.execute("""
-            SELECT *
-            FROM access_logs
-
-            WHERE credential_id = ?
-
+    cursor.execute(
+        """
+        SELECT
+            timestamp,
+            device_id,
+            location_name
+        FROM access_logs
+        WHERE
+            credential_id = ?
             AND decision = 'ALLOW'
-
-            ORDER BY id DESC
-
-            LIMIT 1
-        """, (
-            credential_id,
-        )).fetchone()
-
-
-        connection.close()
-
-
-        if previous:
-
-            connection = get_connection()
-
-
-            previous_device = connection.execute("""
-                SELECT *
-                FROM devices
-                WHERE device_id = ?
-            """, (
-                previous["device_id"],
-            )).fetchone()
-
-
-            connection.close()
-
-
-            if previous_device:
-
-                distance = calculate_distance_km(
-
-                    previous_device["latitude"],
-
-                    previous_device["longitude"],
-
-                    device["latitude"],
-
-                    device["longitude"]
-
-                )
-
-
-                previous_time = datetime.fromisoformat(
-
-                    previous["timestamp"]
-
-                )
-
-
-                current_time = datetime.now(
-                    timezone.utc
-                )
-
-
-                seconds = (
-
-                    current_time
-                    -
-                    previous_time
-
-                ).total_seconds()
-
-
-                if seconds > 0:
-
-                    speed = (
-
-                        distance
-                        /
-                        (seconds / 3600)
-
-                    )
-
-
-                    # Demonstration threshold
-
-                    if speed > 900:
-
-                        impossible_travel = True
-
-
-    # ========================================================
-    # RISK
-    # ========================================================
-
-    score, risk_level, reasons = calculate_risk(
-
-        credential_valid,
-
-        device_valid,
-
-        impossible_travel=
-            impossible_travel
-
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (credential_id,)
     )
 
+    previous_access = cursor.fetchone()
 
-    # ========================================================
-    # AUTHORIZATION
-    # ========================================================
+    if previous_access:
 
-    authorized = (
-
-        credential is not None
-
-        and
-
-        credential["authorized"]
-
-    )
-
-
-    if not authorized:
-
-        score += 20
-
-        risk_level = "HIGH"
-
-        reasons.append(
-            "Credential unauthorized"
+        previous_time = parse_time(
+            previous_access["timestamp"]
         )
 
+        current_time = now_utc()
+
+        elapsed_seconds = (
+            current_time - previous_time
+        ).total_seconds()
+
+        # Prevent division by zero
+        if elapsed_seconds < 1:
+            elapsed_seconds = 1
+
+        # ----------------------------------------------------
+        # Find previous device
+        # ----------------------------------------------------
+
+        cursor.execute(
+            """
+            SELECT *
+            FROM devices
+            WHERE device_id = ?
+            """,
+            (previous_access["device_id"],)
+        )
+
+        previous_device = cursor.fetchone()
+
+        if previous_device:
+
+            # ------------------------------------------------
+            # Distance between locations
+            # ------------------------------------------------
+
+            distance_km = haversine_distance(
+                previous_device["latitude"],
+                previous_device["longitude"],
+                device["latitude"],
+                device["longitude"]
+            )
+
+            # ------------------------------------------------
+            # Travel speed
+            # ------------------------------------------------
+
+            elapsed_hours = (
+                elapsed_seconds / 3600
+            )
+
+            required_speed = (
+                distance_km / elapsed_hours
+            )
+
+            print()
+            print("================================")
+            print("IMPOSSIBLE TRAVEL CHECK")
+            print("================================")
+            print(
+                "Previous Device:",
+                previous_access["device_id"]
+            )
+            print(
+                "Current Device:",
+                device_id
+            )
+            print(
+                "Distance:",
+                round(distance_km, 2),
+                "km"
+            )
+            print(
+                "Elapsed:",
+                round(elapsed_seconds, 2),
+                "seconds"
+            )
+            print(
+                "Required Speed:",
+                round(required_speed, 2),
+                "km/h"
+            )
+            print("================================")
+
+            # ------------------------------------------------
+            # Impossible travel threshold
+            # ------------------------------------------------
+
+            if (
+                previous_access["device_id"]
+                != device_id
+                and required_speed > 900
+            ):
+
+                impossible_travel = True
+
+                travel_reason = (
+                    "Impossible travel detected: "
+                    + str(round(required_speed, 2))
+                    + " km/h required"
+                )
 
     # ========================================================
-    # FINAL DECISION
+    # REPEATED FAILURE CHECK
     # ========================================================
 
-    if (
+    cursor.execute(
+        """
+        SELECT COUNT(*) AS failure_count
+        FROM access_logs
+        WHERE
+            credential_id = ?
+            AND decision = 'BLOCK'
+            AND timestamp >= ?
+        """,
+        (
+            credential_id,
+            (
+                now_utc().timestamp()
+                - 300
+            )
+        )
+    )
 
-        device_valid
+    failure_row = cursor.fetchone()
 
-        and
+    repeated_failures = False
 
-        credential_valid
+    if failure_row:
 
-        and
+        try:
+            repeated_failures = (
+                int(
+                    failure_row["failure_count"]
+                ) >= 3
+            )
+        except Exception:
+            repeated_failures = False
 
-        authorized
+    # ========================================================
+    # CALCULATE RISK
+    # ========================================================
 
-        and
+    risk = calculate_risk(
+        credential_authorized=credential_authorized,
+        device_authorized=device_authorized,
+        replay=False,
+        impossible_travel=impossible_travel,
+        unusual_location=False,
+        repeated_failures=repeated_failures
+    )
 
-        score <= 50
+    # ========================================================
+    # DECISION
+    # ========================================================
 
-    ):
-
-        decision = "ALLOW"
-
-        authentication_result = "SUCCESS"
-
-
-    else:
+    if not credential_authorized:
 
         decision = "BLOCK"
 
-        authentication_result = "FAILED"
+        reason = (
+            "Unauthorized credential"
+        )
 
+        authentication_result = (
+            "UNAUTHORIZED_CREDENTIAL"
+        )
 
-    reason = "; ".join(
-        reasons
-    )
+    elif not device_authorized:
 
+        decision = "BLOCK"
 
-    user_name = (
+        reason = (
+            "Unauthorized device"
+        )
 
-        credential["user_name"]
+        authentication_result = (
+            "UNAUTHORIZED_DEVICE"
+        )
 
-        if credential
+    elif impossible_travel:
 
-        else "Unknown"
+        decision = "BLOCK"
 
-    )
+        reason = travel_reason
 
+        authentication_result = (
+            "IMPOSSIBLE_TRAVEL"
+        )
+
+    elif risk["score"] > 50:
+
+        decision = "BLOCK"
+
+        reason = "; ".join(
+            risk["reasons"]
+        )
+
+        authentication_result = (
+            "HIGH_RISK"
+        )
+
+    else:
+
+        decision = "ALLOW"
+
+        reason = (
+            "Authentication successful"
+        )
+
+        authentication_result = (
+            "AUTHENTICATED"
+        )
 
     # ========================================================
-    # DATABASE LOG
+    # CLOSE DATABASE
     # ========================================================
 
-    log_access(
+    conn.close()
 
+    # ========================================================
+    # SAVE LOG
+    # ========================================================
+
+    save_access_log(
         credential_id,
-
         user_name,
-
         device_id,
-
         device["location_name"],
-
         decision,
-
-        score,
-
-        risk_level,
-
+        risk["score"],
+        risk["level"],
         reason,
-
         authentication_result
-
     )
 
-
     # ========================================================
-    # DASHBOARD EVENT
+    # EVENT DATA
     # ========================================================
 
     event = {
-
-        "timestamp":
-            datetime.now(
-                timezone.utc
-            ).isoformat(),
-
-        "credential_id":
-            credential_id,
-
-        "user_name":
-            user_name,
-
-        "device_id":
-            device_id,
-
-        "location":
-            device["location_name"],
-
-        "decision":
-            decision,
-
-        "risk_score":
-            score,
-
-        "risk_level":
-            risk_level,
-
-        "reason":
-            reason
-
+        "timestamp": iso_now(),
+        "credential_id": credential_id,
+        "user_name": user_name,
+        "device_id": device_id,
+        "location_name": device["location_name"],
+        "decision": decision,
+        "risk_score": risk["score"],
+        "risk_level": risk["level"],
+        "reason": reason,
+        "authentication_result": authentication_result
     }
 
+    # ========================================================
+    # REAL-TIME DASHBOARD EVENT
+    # ========================================================
 
-    socketio.emit(
-        "access_event",
-        event
+    emit_access_event(event)
+
+    # ========================================================
+    # CONSOLE OUTPUT
+    # ========================================================
+
+    print()
+    print("==========================================")
+    print("          GHOST KEY ACCESS")
+    print("==========================================")
+    print(
+        "Credential:",
+        credential_id
     )
+    print(
+        "User:",
+        user_name
+    )
+    print(
+        "Device:",
+        device_id
+    )
+    print(
+        "Location:",
+        device["location_name"]
+    )
+    print(
+        "Decision:",
+        decision
+    )
+    print(
+        "Risk Score:",
+        risk["score"]
+    )
+    print(
+        "Risk Level:",
+        risk["level"]
+    )
+    print(
+        "Reason:",
+        reason
+    )
+    print(
+        "Authentication:",
+        authentication_result
+    )
+    print("==========================================")
+    print()
 
+    # ========================================================
+    # RETURN RESULT
+    # ========================================================
 
-    return jsonify(event)
+    if decision == "ALLOW":
+
+        return jsonify(event), 200
+
+    else:
+
+        return jsonify(event), 403
 
 
 # ============================================================
-# LOGS
+# GET ACCESS LOGS
 # ============================================================
 
 @app.route(
@@ -671,27 +1264,43 @@ def access_request():
 )
 def get_logs():
 
-    connection = get_connection()
+    conn = get_connection()
 
+    cursor = conn.cursor()
 
-    logs = connection.execute("""
+    cursor.execute(
+        """
         SELECT *
         FROM access_logs
         ORDER BY id DESC
         LIMIT 100
-    """).fetchall()
+        """
+    )
 
+    rows = cursor.fetchall()
 
-    connection.close()
+    conn.close()
 
+    logs = []
 
-    return jsonify([
+    for row in rows:
 
-        dict(row)
+        logs.append({
+            "id": row["id"],
+            "timestamp": row["timestamp"],
+            "credential_id": row["credential_id"],
+            "user_name": row["user_name"],
+            "device_id": row["device_id"],
+            "location_name": row["location_name"],
+            "decision": row["decision"],
+            "risk_score": row["risk_score"],
+            "risk_level": row["risk_level"],
+            "reason": row["reason"],
+            "authentication_result":
+                row["authentication_result"]
+        })
 
-        for row in logs
-
-    ])
+    return jsonify(logs)
 
 
 # ============================================================
@@ -704,77 +1313,113 @@ def get_logs():
 )
 def get_stats():
 
-    connection = get_connection()
+    conn = get_connection()
 
+    cursor = conn.cursor()
 
-    total = connection.execute("""
+    # --------------------------------------------------------
+    # Total attempts
+    # --------------------------------------------------------
+
+    cursor.execute(
+        """
         SELECT COUNT(*) AS count
         FROM access_logs
-    """).fetchone()["count"]
+        """
+    )
 
+    total = cursor.fetchone()["count"]
 
-    allowed = connection.execute("""
+    # --------------------------------------------------------
+    # Allowed
+    # --------------------------------------------------------
+
+    cursor.execute(
+        """
         SELECT COUNT(*) AS count
         FROM access_logs
         WHERE decision = 'ALLOW'
-    """).fetchone()["count"]
+        """
+    )
 
+    allowed = cursor.fetchone()["count"]
 
-    blocked = connection.execute("""
+    # --------------------------------------------------------
+    # Blocked
+    # --------------------------------------------------------
+
+    cursor.execute(
+        """
         SELECT COUNT(*) AS count
         FROM access_logs
         WHERE decision = 'BLOCK'
-    """).fetchone()["count"]
+        """
+    )
 
+    blocked = cursor.fetchone()["count"]
 
-    critical = connection.execute("""
+    # --------------------------------------------------------
+    # Critical
+    # --------------------------------------------------------
+
+    cursor.execute(
+        """
         SELECT COUNT(*) AS count
         FROM access_logs
         WHERE risk_level = 'CRITICAL'
-    """).fetchone()["count"]
+        """
+    )
 
+    critical = cursor.fetchone()["count"]
 
-    connection.close()
+    # --------------------------------------------------------
+    # High risk
+    # --------------------------------------------------------
 
+    cursor.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM access_logs
+        WHERE risk_level = 'HIGH'
+        """
+    )
+
+    high = cursor.fetchone()["count"]
+
+    conn.close()
 
     return jsonify({
-
-        "total": total,
-
+        "total_attempts": total,
         "allowed": allowed,
-
         "blocked": blocked,
-
-        "critical": critical
-
+        "critical": critical,
+        "high_risk": high
     })
 
 
 # ============================================================
-# START
+# RUN SERVER
 # ============================================================
 
 if __name__ == "__main__":
 
     print()
-    print("==============================")
-    print("       GHOST KEY SERVER")
-    print("==============================")
+    print("==============================================")
+    print("          GHOST KEY BACKEND")
+    print("==============================================")
+    print("Server: http://0.0.0.0:5000")
+    print("Health: http://127.0.0.1:5000/health")
+    print("Challenge: /api/challenge")
+    print("Access: /api/access")
+    print("Logs: /api/logs")
+    print("Stats: /api/stats")
+    print("==============================================")
     print()
-    print(
-        "Server: http://0.0.0.0:5000"
-    )
-    print()
-
 
     socketio.run(
-
         app,
-
         host="0.0.0.0",
-
         port=5000,
-
-        debug=True
-
+        debug=True,
+        allow_unsafe_werkzeug=True
     )
