@@ -2,7 +2,7 @@ import hashlib
 import hmac
 
 
-def calculate_hmac(secret, message):
+def hmac_sha256(secret, message):
     return hmac.new(
         secret.encode(),
         message.encode(),
@@ -10,11 +10,15 @@ def calculate_hmac(secret, message):
     ).hexdigest()
 
 
-def verify_hmac(secret, message, received):
-    expected = calculate_hmac(secret, message)
+def verify_hmac(secret, message, received_hmac):
+    
+    expected = hmac_sha256(
+        secret,
+        message
+    )
 
     return hmac.compare_digest(
         expected,
-        received
+        received_hmac
     )
 
