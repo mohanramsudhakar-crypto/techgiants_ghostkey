@@ -191,6 +191,20 @@ def initialize_database():
         ),
 
         (
+            "CARD_003",
+            "Security Staff",
+            "card_secret_003",
+            1
+        ),
+
+        (
+            "CARD_004",
+            "Night Shift Manager",
+            "card_secret_004",
+            1
+        ),
+
+        (
             "CARD_999",
             "Unknown Card",
             "unknown_secret",
