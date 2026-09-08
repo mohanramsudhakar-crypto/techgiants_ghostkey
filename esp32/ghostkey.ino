@@ -168,6 +168,44 @@ void deniedBeep() {
 
 
 // ============================================================
+// STOLEN CARD ALARM
+// ============================================================
+// Distinct, longer/faster buzzer pattern + a held OLED warning
+// so a stolen-card attempt reads very differently from an
+// ordinary "access denied" beep.
+// ============================================================
+
+void stolenCardAlarm(String cardID) {
+
+  oledLarge("STOLEN");
+
+  for (int i = 0; i < 8; i++) {
+
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(80);
+
+    digitalWrite(BUZZER_PIN, LOW);
+    delay(60);
+  }
+
+  oledMessage(
+    "!! STOLEN CARD !!",
+    cardID,
+    "CALL SECURITY"
+  );
+
+  delay(3000);
+
+  lockDoor();
+
+  oledMessage(
+    "GHOST KEY",
+    "SYSTEM READY"
+  );
+}
+
+
+// ============================================================
 // HMAC SHA256
 // ============================================================
 
@@ -738,6 +776,9 @@ bool sendAccess(
   String riskLevel =
       responseDoc["risk_level"] | "UNKNOWN";
 
+  String authResult =
+      responseDoc["authentication_result"] | "";
+
   Serial.print("DECISION: ");
   Serial.println(decision);
 
@@ -781,6 +822,18 @@ bool sendAccess(
       "GHOST KEY",
       "DOOR LOCKED"
     );
+  }
+
+  // ========================================================
+  // ACCESS BLOCKED - STOLEN CARD (distinct alarm)
+  // ========================================================
+
+  else if (authResult == "STOLEN_CARD_USED") {
+
+    Serial.println();
+    Serial.println("!!! STOLEN CARD DETECTED !!!");
+
+    stolenCardAlarm(cardID);
   }
 
   // ========================================================
