@@ -65,6 +65,27 @@ async function aesDecryptToJSON(envelope) {
     return JSON.parse(plaintext);
 }
 
+// Encrypt a JS object into {iv, data} (both hex strings), for
+// the POST requests below (report-stolen / reinstate).
+async function aesEncryptFromJSON(obj) {
+
+    const key = await aesKeyPromise;
+
+    const iv = crypto.getRandomValues(new Uint8Array(16));
+    const data = new TextEncoder().encode(JSON.stringify(obj));
+
+    const cipherBuffer = await crypto.subtle.encrypt(
+        { name: "AES-CBC", iv: iv },
+        key,
+        data
+    );
+
+    return {
+        iv: bytesToHex(iv),
+        data: bytesToHex(new Uint8Array(cipherBuffer))
+    };
+}
+
 
 // ======================================================
 // SOCKET.IO
@@ -177,6 +198,213 @@ socket.on(
 
 
 // ======================================================
+// STOLEN CARD ALERT
+// ======================================================
+// Separate, louder signal from the server whenever a card
+// already flagged stolen is scanned anywhere. This is meant
+// to stand out from the normal event table - a big banner
+// plus a short alarm tone using the Web Audio API (no sound
+// file needed).
+// ======================================================
+
+function playAlarmTone() {
+
+    try {
+
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const oscillator = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        oscillator.type = "square";
+        oscillator.frequency.value = 880;
+
+        oscillator.connect(gain);
+        gain.connect(ctx.destination);
+
+        gain.gain.setValueAtTime(0.2, ctx.currentTime);
+
+        oscillator.start();
+        oscillator.stop(ctx.currentTime + 0.6);
+
+    } catch (error) {
+
+        console.error("Could not play alarm tone:", error);
+
+    }
+}
+
+function showStolenBanner(event) {
+
+    const banner = document.getElementById("stolenBanner");
+
+    banner.textContent =
+        "🚨 STOLEN CARD USED: " +
+        event.credential_id +
+        " at " +
+        event.location_name +
+        " (" + event.device_id + ") 🚨";
+
+    banner.classList.add("visible");
+
+    playAlarmTone();
+
+    setTimeout(() => {
+        banner.classList.remove("visible");
+    }, 8000);
+}
+
+socket.on(
+    "stolen_card_alert",
+    async envelope => {
+
+        try {
+
+            const event = await aesDecryptToJSON(envelope);
+
+            showStolenBanner(event);
+
+        } catch (error) {
+
+            console.error(
+                "Failed to decrypt stolen_card_alert:",
+                error
+            );
+
+        }
+
+    }
+);
+
+
+// ======================================================
+// CREDENTIAL MANAGEMENT (report stolen / reinstate)
+// ======================================================
+
+function credentialRowHTML(cred) {
+
+    const statusClass =
+        cred.status === "stolen" ? "status-stolen" : "status-active";
+
+    const actionButton =
+        cred.status === "stolen"
+            ? `<button onclick="reinstateCredential('${cred.credential_id}')">Reinstate</button>`
+            : `<button class="danger" onclick="reportStolen('${cred.credential_id}')">Report Stolen</button>`;
+
+    return `
+        <tr>
+            <td>${cred.credential_id}</td>
+            <td>${cred.user_name}</td>
+            <td><span class="${statusClass}">${cred.status.toUpperCase()}</span></td>
+            <td>${actionButton}</td>
+        </tr>
+    `;
+}
+
+async function loadCredentials() {
+
+    try {
+
+        const response = await fetch(API + "/api/credentials");
+
+        const envelope = await response.json();
+
+        const credentials = await aesDecryptToJSON(envelope);
+
+        const table = document.getElementById("credentialsTable");
+
+        table.innerHTML = credentials.map(credentialRowHTML).join("");
+
+    } catch (error) {
+
+        console.error("Failed to load credentials:", error);
+
+    }
+}
+
+async function reportStolen(credentialId) {
+
+    const adminKey = document.getElementById("adminKeyInput").value;
+
+    if (!adminKey) {
+        alert("Enter the admin key first.");
+        return;
+    }
+
+    if (!confirm(`Report ${credentialId} as STOLEN? This blocks it immediately.`)) {
+        return;
+    }
+
+    try {
+
+        const envelope = await aesEncryptFromJSON({
+            credential_id: credentialId,
+            admin_key: adminKey
+        });
+
+        const response = await fetch(API + "/api/credentials/report-stolen", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(envelope)
+        });
+
+        const responseEnvelope = await response.json();
+        const result = await aesDecryptToJSON(responseEnvelope);
+
+        if (!response.ok) {
+            alert("Error: " + (result.error || "Unknown error"));
+        }
+
+        loadCredentials();
+
+    } catch (error) {
+
+        console.error("Report stolen failed:", error);
+        alert("Request failed - check the console.");
+
+    }
+}
+
+async function reinstateCredential(credentialId) {
+
+    const adminKey = document.getElementById("adminKeyInput").value;
+
+    if (!adminKey) {
+        alert("Enter the admin key first.");
+        return;
+    }
+
+    try {
+
+        const envelope = await aesEncryptFromJSON({
+            credential_id: credentialId,
+            admin_key: adminKey
+        });
+
+        const response = await fetch(API + "/api/credentials/reinstate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(envelope)
+        });
+
+        const responseEnvelope = await response.json();
+        const result = await aesDecryptToJSON(responseEnvelope);
+
+        if (!response.ok) {
+            alert("Error: " + (result.error || "Unknown error"));
+        }
+
+        loadCredentials();
+
+    } catch (error) {
+
+        console.error("Reinstate failed:", error);
+        alert("Request failed - check the console.");
+
+    }
+}
+
+
+// ======================================================
 // LOAD LOGS
 // ======================================================
 
@@ -274,6 +502,8 @@ async function loadStats() {
 loadLogs();
 
 loadStats();
+
+loadCredentials();
 
 setInterval(
     loadStats,
