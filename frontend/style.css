@@ -201,6 +201,142 @@ th {
     font-weight: bold;
 }
 
+/* ============================================================
+   STOLEN CARD ALERT BANNER
+   ============================================================ */
+
+.stolen-banner {
+
+    position: fixed;
+
+    top: 0;
+
+    left: 0;
+
+    right: 0;
+
+    z-index: 1000;
+
+    padding: 18px;
+
+    text-align: center;
+
+    font-size: 18px;
+
+    font-weight: bold;
+
+    background: #b30000;
+
+    color: #ffffff;
+
+    transform: translateY(-100%);
+
+    transition: transform 0.3s ease;
+}
+
+.stolen-banner.visible {
+
+    transform: translateY(0);
+
+    animation: stolen-flash 0.8s infinite alternate;
+}
+
+@keyframes stolen-flash {
+
+    from {
+        background: #b30000;
+    }
+
+    to {
+        background: #ff2a2a;
+    }
+}
+
+/* ============================================================
+   CARD SECURITY PANEL
+   ============================================================ */
+
+.admin-key-row {
+
+    display: flex;
+
+    align-items: center;
+
+    gap: 12px;
+
+    margin-bottom: 15px;
+}
+
+.admin-key-row label {
+
+    color: #aaa;
+
+    font-size: 14px;
+}
+
+.admin-key-row input {
+
+    flex: 1;
+
+    max-width: 320px;
+
+    padding: 10px 14px;
+
+    border-radius: 8px;
+
+    border: 1px solid #333;
+
+    background: #1b1b1b;
+
+    color: #ffffff;
+}
+
+.status-active {
+
+    color: #4caf50;
+
+    font-weight: bold;
+}
+
+.status-stolen {
+
+    color: #ff4444;
+
+    font-weight: bold;
+}
+
+button {
+
+    padding: 8px 14px;
+
+    border-radius: 6px;
+
+    border: none;
+
+    background: #333;
+
+    color: #ffffff;
+
+    cursor: pointer;
+
+    font-size: 13px;
+}
+
+button:hover {
+
+    background: #444;
+}
+
+button.danger {
+
+    background: #7a1f1f;
+}
+
+button.danger:hover {
+
+    background: #a12727;
+}
+
 @media(max-width: 800px) {
 
     .stats {
@@ -221,5 +357,19 @@ th {
         align-items: flex-start;
 
         gap: 15px;
+    }
+
+    .admin-key-row {
+
+        flex-direction: column;
+
+        align-items: flex-start;
+    }
+
+    .admin-key-row input {
+
+        max-width: 100%;
+
+        width: 100%;
     }
 }
