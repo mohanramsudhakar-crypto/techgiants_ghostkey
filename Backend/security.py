@@ -68,6 +68,20 @@ AES_KEY_HEX = "3fae1baf5e3d4c2c9be2f1a6c88f3ac0"
 AES_KEY = bytes.fromhex(AES_KEY_HEX)
 
 
+# ============================================================
+# ADMIN KEY (stolen-card reporting)
+# ============================================================
+# A basic shared secret the dashboard must send along with any
+# "report stolen" / "reinstate" request. This is NOT real auth
+# (no per-user login, no expiry) - it just stops a stray or
+# accidental API call from disabling somebody's card. Change
+# this to your own private value; it must match ADMIN_KEY in
+# app.js.
+# ============================================================
+
+ADMIN_KEY = "ghostkey_admin_2026"
+
+
 def aes_encrypt(plaintext):
     """
     Encrypt a UTF-8 string with AES-128-CBC + PKCS7 padding.
