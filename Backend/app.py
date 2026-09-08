@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_socketio import SocketIO
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import secrets
 import json
 import math
@@ -11,7 +11,8 @@ from security import (
     hmac_sha256,
     verify_hmac,
     aes_encrypt,
-    aes_decrypt
+    aes_decrypt,
+    ADMIN_KEY
 )
 
 
@@ -179,6 +180,82 @@ def haversine_distance(
 
 
 # ============================================================
+# BEHAVIORAL CONTEXT (time-of-day / device familiarity)
+# ============================================================
+# Two "soft" signals that describe whether THIS access looks
+# like this credential's normal pattern, without ever being
+# enough by themselves to block a legitimate employee:
+#
+#   - unusual_time:      first time this credential has been
+#                         used at this hour of day
+#   - unfamiliar_device:  first time this credential has been
+#                         used at this specific reader
+#
+# Both are skipped entirely until a credential has enough
+# ALLOW history to have an actual pattern - a brand-new
+# employee's very first swipes are never flagged, since there
+# is nothing yet to compare them against.
+# ============================================================
+
+# Chennai is UTC+5:30; access_logs timestamps are stored in
+# UTC, so this converts back to local time before comparing
+# hours. Change this if the deployment moves timezones.
+LOCAL_TZ_OFFSET = timedelta(hours=5, minutes=30)
+
+# How many past ALLOW events a credential needs before its
+# time/device pattern is considered established enough to
+# compare against. Below this, behavioral checks are skipped.
+MIN_HISTORY_FOR_BEHAVIOR_CHECK = 3
+
+# How far back (in past ALLOW events) to look when building
+# that pattern. Keeps the query cheap and lets old patterns
+# fade out naturally as new ones accumulate.
+BEHAVIOR_HISTORY_LIMIT = 200
+
+
+def get_behavioral_history(cursor, credential_id):
+    """
+    Look at this credential's past successful (ALLOW) accesses
+    and return the set of hours-of-day and the set of devices
+    it has been used on before, plus how many records that's
+    based on.
+    """
+
+    cursor.execute(
+        """
+        SELECT timestamp, device_id
+        FROM access_logs
+        WHERE
+            credential_id = ?
+            AND decision = 'ALLOW'
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (credential_id, BEHAVIOR_HISTORY_LIMIT)
+    )
+
+    rows = cursor.fetchall()
+
+    hours_used = set()
+    devices_used = set()
+
+    for row in rows:
+
+        access_time = parse_time(row["timestamp"])
+
+        local_time = access_time + LOCAL_TZ_OFFSET
+
+        hours_used.add(local_time.hour)
+        devices_used.add(row["device_id"])
+
+    return {
+        "hours": hours_used,
+        "devices": devices_used,
+        "count": len(rows)
+    }
+
+
+# ============================================================
 # RISK LEVEL
 # ============================================================
 
@@ -207,7 +284,9 @@ def calculate_risk(
     replay=False,
     impossible_travel=False,
     unusual_location=False,
-    repeated_failures=False
+    repeated_failures=False,
+    unusual_time=False,
+    unfamiliar_device=False
 ):
 
     score = 0
@@ -283,6 +362,32 @@ def calculate_risk(
 
         reasons.append(
             "Repeated authentication failures"
+        )
+
+    # --------------------------------------------------------
+    # Unusual time (behavioral - soft signal)
+    # --------------------------------------------------------
+    # Worth less than any "hard" flag above so it can never
+    # block a legitimate employee on its own.
+
+    if unusual_time:
+
+        score += 15
+
+        reasons.append(
+            "Access at an unusual time for this credential"
+        )
+
+    # --------------------------------------------------------
+    # Unfamiliar device (behavioral - soft signal)
+    # --------------------------------------------------------
+
+    if unfamiliar_device:
+
+        score += 15
+
+        reasons.append(
+            "Credential not previously seen on this device"
         )
 
     # --------------------------------------------------------
@@ -866,6 +971,62 @@ def access():
         return encrypted_response(event, 403)
 
     # ========================================================
+    # STOLEN CARD CHECK
+    # ========================================================
+    # Blocked immediately, regardless of whether the HMAC is
+    # even valid - once a card is reported stolen it should
+    # never open a door again, full stop. This also fires a
+    # separate, louder "stolen_card_alert" socket event so the
+    # dashboard can flag it as an active incident rather than
+    # just another denied swipe.
+    # ========================================================
+
+    credential_status = credential["status"] or "active"
+
+    if credential_status == "stolen":
+
+        conn.close()
+
+        risk_score = 100
+        risk_level = "CRITICAL"
+        reason = "Card reported stolen - access denied"
+
+        event = {
+            "timestamp": iso_now(),
+            "credential_id": credential_id,
+            "user_name": credential["user_name"],
+            "device_id": device_id,
+            "location_name": device["location_name"],
+            "decision": "BLOCK",
+            "risk_score": risk_score,
+            "risk_level": risk_level,
+            "reason": reason,
+            "authentication_result": "STOLEN_CARD_USED"
+        }
+
+        save_access_log(
+            credential_id,
+            credential["user_name"],
+            device_id,
+            device["location_name"],
+            "BLOCK",
+            risk_score,
+            risk_level,
+            reason,
+            "STOLEN_CARD_USED"
+        )
+
+        emit_access_event(event)
+
+        # Extra, distinct alert channel for stolen-card attempts
+        socketio.emit(
+            "stolen_card_alert",
+            aes_encrypt(json.dumps(event))
+        )
+
+        return encrypted_response(event, 403)
+
+    # ========================================================
     # CREDENTIAL AUTHORIZATION
     # ========================================================
 
@@ -938,6 +1099,31 @@ def access():
         emit_access_event(event)
 
         return encrypted_response(event, 403)
+
+    # ========================================================
+    # BEHAVIORAL CONTEXT CHECK
+    # ========================================================
+    # Compares this attempt's hour-of-day and device against
+    # this credential's own history of successful accesses.
+    # Skipped entirely if there isn't enough history yet, so a
+    # new employee's first few days are never flagged.
+    # ========================================================
+
+    behavior = get_behavioral_history(cursor, credential_id)
+
+    unusual_time = False
+    unfamiliar_device = False
+
+    if behavior["count"] >= MIN_HISTORY_FOR_BEHAVIOR_CHECK:
+
+        current_local_time = now_utc() + LOCAL_TZ_OFFSET
+        current_hour = current_local_time.hour
+
+        if current_hour not in behavior["hours"]:
+            unusual_time = True
+
+        if device_id not in behavior["devices"]:
+            unfamiliar_device = True
 
     # ========================================================
     # IMPOSSIBLE TRAVEL DETECTION
@@ -1114,7 +1300,9 @@ def access():
         replay=False,
         impossible_travel=impossible_travel,
         unusual_location=False,
-        repeated_failures=repeated_failures
+        repeated_failures=repeated_failures,
+        unusual_time=unusual_time,
+        unfamiliar_device=unfamiliar_device
     )
 
     # ========================================================
@@ -1171,8 +1359,8 @@ def access():
 
         decision = "ALLOW"
 
-        reason = (
-            "Authentication successful"
+        reason = "; ".join(
+            risk["reasons"]
         )
 
         authentication_result = (
@@ -1282,6 +1470,218 @@ def access():
     else:
 
         return encrypted_response(event, 403)
+
+
+# ============================================================
+# CREDENTIAL MANAGEMENT - STOLEN CARD HANDLING
+# ============================================================
+# Three small endpoints so an operator can react to a lost or
+# stolen card in seconds from the dashboard, without touching
+# the database by hand:
+#
+#   GET  /api/credentials              - list all cards + status
+#   POST /api/credentials/report-stolen - revoke a card instantly
+#   POST /api/credentials/reinstate     - un-flag a card (found it,
+#                                          false alarm, replaced it)
+#
+# The two POST routes require an admin_key in the (encrypted)
+# body matching ADMIN_KEY in security.py - see the comment
+# there for what that is and isn't protecting against.
+# ============================================================
+
+@app.route(
+    "/api/credentials",
+    methods=["GET"]
+)
+def list_credentials():
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT
+            credential_id,
+            user_name,
+            authorized,
+            status,
+            stolen_reported_at
+        FROM credentials
+        ORDER BY user_name
+        """
+    )
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    credentials = []
+
+    for row in rows:
+
+        credentials.append({
+            "credential_id": row["credential_id"],
+            "user_name": row["user_name"],
+            "authorized": bool(row["authorized"]),
+            "status": row["status"] or "active",
+            "stolen_reported_at": row["stolen_reported_at"]
+        })
+
+    return encrypted_response(credentials)
+
+
+@app.route(
+    "/api/credentials/report-stolen",
+    methods=["POST"]
+)
+def report_stolen():
+
+    data = decrypt_request_body()
+
+    if not data:
+
+        return jsonify({
+            "error": "Missing or undecryptable request body"
+        }), 400
+
+    if data.get("admin_key") != ADMIN_KEY:
+
+        return encrypted_response({
+            "error": "Invalid admin key"
+        }, 403)
+
+    credential_id = data.get("credential_id")
+
+    if not credential_id:
+
+        return encrypted_response({
+            "error": "Missing credential_id"
+        }, 400)
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT * FROM credentials WHERE credential_id = ?",
+        (credential_id,)
+    )
+
+    credential = cursor.fetchone()
+
+    if not credential:
+
+        conn.close()
+
+        return encrypted_response({
+            "error": "Unknown credential_id"
+        }, 404)
+
+    cursor.execute(
+        """
+        UPDATE credentials
+        SET
+            authorized = 0,
+            status = 'stolen',
+            stolen_reported_at = ?
+        WHERE credential_id = ?
+        """,
+        (iso_now(), credential_id)
+    )
+
+    conn.commit()
+
+    conn.close()
+
+    print()
+    print("==========================================")
+    print("       CARD REPORTED STOLEN")
+    print("==========================================")
+    print("Credential:", credential_id)
+    print("User:", credential["user_name"])
+    print("Access revoked immediately.")
+    print("==========================================")
+    print()
+
+    return encrypted_response({
+        "credential_id": credential_id,
+        "status": "stolen",
+        "message": (
+            "Card revoked. Any future scan attempt will be "
+            "blocked and flagged as a stolen-card incident."
+        )
+    })
+
+
+@app.route(
+    "/api/credentials/reinstate",
+    methods=["POST"]
+)
+def reinstate_credential():
+
+    data = decrypt_request_body()
+
+    if not data:
+
+        return jsonify({
+            "error": "Missing or undecryptable request body"
+        }), 400
+
+    if data.get("admin_key") != ADMIN_KEY:
+
+        return encrypted_response({
+            "error": "Invalid admin key"
+        }, 403)
+
+    credential_id = data.get("credential_id")
+
+    if not credential_id:
+
+        return encrypted_response({
+            "error": "Missing credential_id"
+        }, 400)
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT * FROM credentials WHERE credential_id = ?",
+        (credential_id,)
+    )
+
+    credential = cursor.fetchone()
+
+    if not credential:
+
+        conn.close()
+
+        return encrypted_response({
+            "error": "Unknown credential_id"
+        }, 404)
+
+    cursor.execute(
+        """
+        UPDATE credentials
+        SET
+            authorized = 1,
+            status = 'active',
+            stolen_reported_at = NULL
+        WHERE credential_id = ?
+        """,
+        (credential_id,)
+    )
+
+    conn.commit()
+
+    conn.close()
+
+    return encrypted_response({
+        "credential_id": credential_id,
+        "status": "active",
+        "message": "Card reinstated - access restored."
+    })
 
 
 # ============================================================
@@ -1443,6 +1843,9 @@ if __name__ == "__main__":
     print("Access: /api/access")
     print("Logs: /api/logs")
     print("Stats: /api/stats")
+    print("Credentials: /api/credentials")
+    print("Report Stolen: /api/credentials/report-stolen")
+    print("Reinstate: /api/credentials/reinstate")
     print("AES: all payloads above except /health are")
     print("     encrypted - see security.py AES_KEY_HEX")
     print("==============================================")
