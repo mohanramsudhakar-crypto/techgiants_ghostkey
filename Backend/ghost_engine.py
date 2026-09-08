@@ -51,7 +51,9 @@ def calculate_risk(
     replay=False,
     impossible_travel=False,
     unusual_location=False,
-    repeated_failures=False
+    repeated_failures=False,
+    unusual_time=False,
+    unfamiliar_device=False
 ):
 
     score = 0
@@ -97,6 +99,33 @@ def calculate_risk(
         score += 20
         reasons.append(
             "Repeated authentication failures"
+        )
+
+    # --------------------------------------------------------
+    # BEHAVIORAL CONTEXT (soft signals)
+    # --------------------------------------------------------
+    # These two are deliberately worth less than any single
+    # "hard" red flag above. On their own, or even both at
+    # once (15 + 15 = 30), they stay under the BLOCK threshold
+    # of 50 used in app.py - so a legitimate employee working
+    # late or badging in at a different (still-authorized)
+    # reader for the first time is flagged for visibility, not
+    # locked out. They only tip the balance to BLOCK when
+    # something more serious is already going on.
+    # --------------------------------------------------------
+
+    if unusual_time:
+
+        score += 15
+        reasons.append(
+            "Access at an unusual time for this credential"
+        )
+
+    if unfamiliar_device:
+
+        score += 15
+        reasons.append(
+            "Credential not previously seen on this device"
         )
 
     return {
