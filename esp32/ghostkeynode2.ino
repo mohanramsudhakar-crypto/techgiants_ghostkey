@@ -14,7 +14,7 @@
 const char* WIFI_SSID = "NARZO";
 const char* WIFI_PASSWORD = "aahilhere";
 
-const char* SERVER = "http://10.188.102.195:5000";
+const char* SERVER = "http://10.15.186.24:5000";
 
 
 // ============================================================
@@ -389,6 +389,16 @@ String getCardSecret(String cardID)
     if (cardID == "CARD_002")
     {
         return "card_secret_002";
+    }
+
+    if (cardID == "CARD_003")
+    {
+        return "card_secret_003";
+    }
+
+    if (cardID == "CARD_004")
+    {
+        return "card_secret_004";
     }
 
     if (cardID == "CARD_999")
@@ -1328,6 +1338,14 @@ void setup()
     );
 
     Serial.println(
+        "3 = CARD_003"
+    );
+
+    Serial.println(
+        "4 = CARD_004"
+    );
+
+    Serial.println(
         "9 = CARD_999"
     );
 
@@ -1407,6 +1425,30 @@ void loop()
         {
             normalAccess(
                 "CARD_002"
+            );
+        }
+
+
+        // ----------------------------------------------------
+        // CARD 003
+        // ----------------------------------------------------
+
+        else if (command == '3')
+        {
+            normalAccess(
+                "CARD_003"
+            );
+        }
+
+
+        // ----------------------------------------------------
+        // CARD 004
+        // ----------------------------------------------------
+
+        else if (command == '4')
+        {
+            normalAccess(
+                "CARD_004"
             );
         }
 
