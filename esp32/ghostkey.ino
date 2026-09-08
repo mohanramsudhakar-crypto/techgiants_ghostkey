@@ -18,7 +18,7 @@ const char* WIFI_PASSWORD = "aahilhere";
 
 // IMPORTANT:
 // Replace this with the IP address of the laptop running Flask.
-const char* SERVER = "http://10.188.102.195:5000";
+const char* SERVER = "http://10.15.186.24:5000";
 
 // ============================================================
 // NODE 1 IDENTITY
@@ -437,6 +437,14 @@ String getCardSecret(String cardID) {
 
   if (cardID == "CARD_002") {
     return "card_secret_002";
+  }
+
+  if (cardID == "CARD_003") {
+    return "card_secret_003";
+  }
+
+  if (cardID == "CARD_004") {
+    return "card_secret_004";
   }
 
   if (cardID == "CARD_999") {
@@ -975,6 +983,14 @@ String getSimulatedCard(char command) {
     return "CARD_002";
   }
 
+  if (command == '3') {
+    return "CARD_003";
+  }
+
+  if (command == '4') {
+    return "CARD_004";
+  }
+
   if (command == '9') {
     return "CARD_999";
   }
@@ -1141,6 +1157,8 @@ void setup() {
   Serial.println("SIMULATED PN532 COMMANDS:");
   Serial.println("1 = CARD_001");
   Serial.println("2 = CARD_002");
+  Serial.println("3 = CARD_003");
+  Serial.println("4 = CARD_004");
   Serial.println("9 = CARD_999");
   Serial.println("=================================");
 
@@ -1204,6 +1222,22 @@ void loop() {
 
       normalAccess(
         "CARD_002"
+      );
+    }
+
+    // CARD_003
+    else if (command == '3') {
+
+      normalAccess(
+        "CARD_003"
+      );
+    }
+
+    // CARD_004
+    else if (command == '4') {
+
+      normalAccess(
+        "CARD_004"
       );
     }
 
