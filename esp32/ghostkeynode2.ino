@@ -113,6 +113,38 @@ void deniedBeep()
 
 
 // ============================================================
+// STOLEN CARD ALARM
+// ============================================================
+// Distinct, longer/faster buzzer pattern than a normal denied
+// beep, so a stolen-card attempt is unmistakable even without
+// an OLED on this node.
+// ============================================================
+
+void stolenCardAlarm(String cardID)
+{
+    Serial.println();
+    Serial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+    Serial.println("!!! STOLEN CARD DETECTED !!!");
+    Serial.print("CARD: ");
+    Serial.println(cardID);
+    Serial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+
+    for (int i = 0; i < 8; i++)
+    {
+        digitalWrite(BUZZER_PIN, HIGH);
+        delay(80);
+
+        digitalWrite(BUZZER_PIN, LOW);
+        delay(60);
+    }
+
+    lockDoor();
+
+    delay(3000);
+}
+
+
+// ============================================================
 // HMAC-SHA256
 // ============================================================
 
@@ -725,6 +757,11 @@ bool sendAccess(
         | "UNKNOWN";
 
 
+    String authResult =
+        responseDoc["authentication_result"]
+        | "";
+
+
     Serial.println();
     Serial.println(
         "================================"
@@ -794,6 +831,16 @@ bool sendAccess(
         // ----------------------------------------------------
 
         lockDoor();
+    }
+
+
+    // ========================================================
+    // ACCESS BLOCKED - STOLEN CARD (distinct alarm)
+    // ========================================================
+
+    else if (authResult == "STOLEN_CARD_USED")
+    {
+        stolenCardAlarm(cardID);
     }
 
 
