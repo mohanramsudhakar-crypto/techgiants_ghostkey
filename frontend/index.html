@@ -23,6 +23,12 @@
 
 <body>
 
+<!-- ===================================================== -->
+<!-- STOLEN CARD ALERT BANNER (hidden until triggered) -->
+<!-- ===================================================== -->
+
+<div id="stolenBanner" class="stolen-banner"></div>
+
 <div class="container">
 
     <header>
@@ -149,6 +155,57 @@
                 </span>
 
             </div>
+
+        </div>
+
+    </section>
+
+
+    <!-- ================================================= -->
+    <!-- CARD SECURITY (stolen / lost card handling) -->
+    <!-- ================================================= -->
+
+    <section>
+
+        <h2>Card Security</h2>
+
+        <div class="admin-key-row">
+
+            <label for="adminKeyInput">Admin Key</label>
+
+            <input
+                type="password"
+                id="adminKeyInput"
+                placeholder="Enter admin key to report/reinstate cards"
+            >
+
+        </div>
+
+        <div class="table-container">
+
+            <table>
+
+                <thead>
+
+                    <tr>
+
+                        <th>Card ID</th>
+
+                        <th>User</th>
+
+                        <th>Status</th>
+
+                        <th>Action</th>
+
+                    </tr>
+
+                </thead>
+
+                <tbody id="credentialsTable">
+
+                </tbody>
+
+            </table>
 
         </div>
 
