@@ -15,6 +15,28 @@ def get_connection():
 
 
 # ============================================================
+# MIGRATION HELPER
+# ============================================================
+# ghostkey.db may already exist on disk from before the
+# stolen-card feature was added. CREATE TABLE IF NOT EXISTS
+# won't add new columns to a table that already exists, so
+# this checks for each new column and ALTERs it in if missing.
+# ============================================================
+
+def _add_column_if_missing(cursor, table, column, coltype):
+
+    cursor.execute(f"PRAGMA table_info({table})")
+
+    existing_columns = [row[1] for row in cursor.fetchall()]
+
+    if column not in existing_columns:
+
+        cursor.execute(
+            f"ALTER TABLE {table} ADD COLUMN {column} {coltype}"
+        )
+
+
+# ============================================================
 # INITIALIZE DATABASE
 # ============================================================
 
@@ -42,15 +64,33 @@ def initialize_database():
     # --------------------------------------------------------
     # CREDENTIALS
     # --------------------------------------------------------
+    # "status" distinguishes WHY a credential is blocked:
+    #   active  - normal, working card
+    #   stolen  - reported stolen, hard-blocked, dashboard alarm
+    #   revoked - deauthorized for other reasons (no alarm)
+    # "authorized" stays as the actual access gate (0 = blocked)
+    # so existing risk-engine logic doesn't need to change.
+    # --------------------------------------------------------
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS credentials (
             credential_id TEXT PRIMARY KEY,
             user_name TEXT NOT NULL,
             credential_secret TEXT NOT NULL,
-            authorized INTEGER DEFAULT 1
+            authorized INTEGER DEFAULT 1,
+            status TEXT DEFAULT 'active',
+            stolen_reported_at TEXT
         )
     """)
+
+    # Migration for pre-existing databases
+    _add_column_if_missing(
+        cursor, "credentials", "status", "TEXT DEFAULT 'active'"
+    )
+
+    _add_column_if_missing(
+        cursor, "credentials", "stolen_reported_at", "TEXT"
+    )
 
     # --------------------------------------------------------
     # CHALLENGES
@@ -130,6 +170,9 @@ def initialize_database():
 
     # ========================================================
     # SEED CREDENTIALS
+    # ========================================================
+    # status/stolen_reported_at aren't listed below, so new
+    # rows default to status='active' automatically.
     # ========================================================
 
     credentials = [
