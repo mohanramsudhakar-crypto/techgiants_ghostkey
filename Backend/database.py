@@ -3,51 +3,20 @@ from pathlib import Path
 
 DB_PATH = Path(__file__).parent / "ghostkey.db"
 
-
-# ============================================================
-# DATABASE CONNECTION
-# ============================================================
-
 def get_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
-
-# ============================================================
-# MIGRATION HELPER
-# ============================================================
-# ghostkey.db may already exist on disk from before the
-# stolen-card feature was added. CREATE TABLE IF NOT EXISTS
-# won't add new columns to a table that already exists, so
-# this checks for each new column and ALTERs it in if missing.
-# ============================================================
-
-def _add_column_if_missing(cursor, table, column, coltype):
-
-    cursor.execute(f"PRAGMA table_info({table})")
-
+def _add_column_if_missing(cursor, table, column, coltype):  #useful for adding new features to the project without affecting the existing database structure
+    cursor.execute(f"PRAGMA table_info({table})")            
     existing_columns = [row[1] for row in cursor.fetchall()]
-
     if column not in existing_columns:
-
-        cursor.execute(
-            f"ALTER TABLE {table} ADD COLUMN {column} {coltype}"
-        )
-
-
-# ============================================================
-# INITIALIZE DATABASE
-# ============================================================
-
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+        
 def initialize_database():
-
     conn = get_connection()
     cursor = conn.cursor()
-
-    # --------------------------------------------------------
-    # DEVICES
-    # --------------------------------------------------------
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS devices (
@@ -58,8 +27,7 @@ def initialize_database():
             longitude REAL NOT NULL,
             device_secret TEXT NOT NULL,
             authorized INTEGER DEFAULT 1
-        )
-    """)
+        )""")
 
     # --------------------------------------------------------
     # CREDENTIALS
@@ -92,10 +60,7 @@ def initialize_database():
         cursor, "credentials", "stolen_reported_at", "TEXT"
     )
 
-    # --------------------------------------------------------
     # CHALLENGES
-    # --------------------------------------------------------
-
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS challenges (
             nonce TEXT PRIMARY KEY,
@@ -106,10 +71,7 @@ def initialize_database():
         )
     """)
 
-    # --------------------------------------------------------
     # ACCESS LOGS
-    # --------------------------------------------------------
-
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS access_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -126,10 +88,7 @@ def initialize_database():
         )
     """)
 
-    # ========================================================
     # SEED DEVICES
-    # ========================================================
-
     devices = [
         (
             "READER_001",
@@ -168,12 +127,10 @@ def initialize_database():
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, device)
 
-    # ========================================================
     # SEED CREDENTIALS
-    # ========================================================
+
     # status/stolen_reported_at aren't listed below, so new
     # rows default to status='active' automatically.
-    # ========================================================
 
     credentials = [
         (
@@ -229,24 +186,12 @@ def initialize_database():
     conn.close()
 
 
-# ============================================================
-# COMPATIBILITY ALIAS
-# ============================================================
-# Some versions of the project use init_db().
-# Keep both names working.
 
-def init_db():
+def init_db():                            #keep both names working
     initialize_database()
-
-
-# ============================================================
-# RUN DIRECTLY
-# ============================================================
 
 if __name__ == "__main__":
-
     initialize_database()
-
     print("====================================")
     print("Ghost Key Database")
     print("====================================")
